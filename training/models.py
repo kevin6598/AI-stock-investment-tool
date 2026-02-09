@@ -208,39 +208,46 @@ class LightGBMModel(BaseModel):
 
         self.is_fitted = True
 
+    def _as_df(self, X: np.ndarray) -> pd.DataFrame:
+        """Wrap numpy array with stored feature names for LightGBM."""
+        if self.feature_names:
+            return pd.DataFrame(X, columns=self.feature_names)
+        return pd.DataFrame(X)
+
     def predict(self, X: np.ndarray) -> np.ndarray:
-        return self.model.predict(X)
+        return self.model.predict(self._as_df(X))
 
     def predict_quantiles(self, X: np.ndarray,
                           quantiles: Optional[List[float]] = None) -> Dict[float, np.ndarray]:
         if quantiles is None:
             quantiles = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
 
+        X_df = self._as_df(X)
         result = {}
         for q in quantiles:
             if q in self._quantile_models:
-                result[q] = self._quantile_models[q].predict(X)
+                result[q] = self._quantile_models[q].predict(X_df)
             else:
                 # Interpolate from trained quantile models
                 trained_qs = sorted(self._quantile_models.keys())
                 if q < trained_qs[0]:
-                    low_pred = self._quantile_models[trained_qs[0]].predict(X)
-                    mid_pred = self._quantile_models[0.50].predict(X)
+                    low_pred = self._quantile_models[trained_qs[0]].predict(X_df)
+                    mid_pred = self._quantile_models[0.50].predict(X_df)
                     result[q] = low_pred - (mid_pred - low_pred) * 0.5
                 elif q > trained_qs[-1]:
-                    high_pred = self._quantile_models[trained_qs[-1]].predict(X)
-                    mid_pred = self._quantile_models[0.50].predict(X)
+                    high_pred = self._quantile_models[trained_qs[-1]].predict(X_df)
+                    mid_pred = self._quantile_models[0.50].predict(X_df)
                     result[q] = high_pred + (high_pred - mid_pred) * 0.5
                 else:
                     # Linear interpolation between nearest trained quantiles
                     lower_q = max(tq for tq in trained_qs if tq <= q)
                     upper_q = min(tq for tq in trained_qs if tq >= q)
                     if lower_q == upper_q:
-                        result[q] = self._quantile_models[lower_q].predict(X)
+                        result[q] = self._quantile_models[lower_q].predict(X_df)
                     else:
                         w = (q - lower_q) / (upper_q - lower_q)
-                        low_pred = self._quantile_models[lower_q].predict(X)
-                        high_pred = self._quantile_models[upper_q].predict(X)
+                        low_pred = self._quantile_models[lower_q].predict(X_df)
+                        high_pred = self._quantile_models[upper_q].predict(X_df)
                         result[q] = low_pred * (1 - w) + high_pred * w
         return result
 
