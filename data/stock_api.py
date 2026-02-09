@@ -35,6 +35,10 @@ def get_historical_data(ticker: str, period: str = "1y", interval: str = "1d") -
         df = stock.history(period=period, interval=interval)
         if df.empty:
             return pd.DataFrame()
+        # yfinance >= 0.2.36 returns MultiIndex columns ("Price", "Ticker")
+        # for single-ticker queries.  Flatten to simple column names.
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
         df.index = pd.to_datetime(df.index)
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
