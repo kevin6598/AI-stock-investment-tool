@@ -22,7 +22,7 @@ export default function TickerSearch() {
         value={ticker}
         onChange={(e) => setTicker(e.target.value)}
         placeholder="Enter ticker (e.g. AAPL)"
-        className="bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm
+        className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg px-4 py-2 text-sm
                    placeholder-gray-500 focus:outline-none focus:border-accent
                    w-64"
         aria-label="Stock ticker symbol"

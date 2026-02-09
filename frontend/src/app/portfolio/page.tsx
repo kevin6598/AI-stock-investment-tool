@@ -49,7 +49,7 @@ export default function PortfolioPage() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold">Portfolio</h1>
-          <p className="text-sm text-gray-400 mt-1">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             AI-optimized allocation and forecast
           </p>
         </div>
@@ -65,18 +65,18 @@ export default function PortfolioPage() {
 
       {analyzed && (
         <div className="grid grid-cols-3 gap-4 mb-6">
-          <div className="bg-card rounded-xl p-4 border border-gray-700 text-center">
-            <div className="text-xs text-gray-400">Holdings</div>
+          <div className="bg-white dark:bg-card rounded-xl p-4 border border-gray-200 dark:border-gray-700 text-center">
+            <div className="text-xs text-gray-500 dark:text-gray-400">Holdings</div>
             <div className="text-2xl font-bold">{holdings.length}</div>
           </div>
-          <div className="bg-card rounded-xl p-4 border border-gray-700 text-center">
-            <div className="text-xs text-gray-400">Avg Confidence</div>
+          <div className="bg-white dark:bg-card rounded-xl p-4 border border-gray-200 dark:border-gray-700 text-center">
+            <div className="text-xs text-gray-500 dark:text-gray-400">Avg Confidence</div>
             <div className="text-2xl font-bold text-accent">
               {(totalConfidence * 100).toFixed(1)}%
             </div>
           </div>
-          <div className="bg-card rounded-xl p-4 border border-gray-700 text-center">
-            <div className="text-xs text-gray-400">Bullish / Bearish</div>
+          <div className="bg-white dark:bg-card rounded-xl p-4 border border-gray-200 dark:border-gray-700 text-center">
+            <div className="text-xs text-gray-500 dark:text-gray-400">Bullish / Bearish</div>
             <div className="text-2xl font-bold">
               <span className="text-up">
                 {holdings.filter((h) => h.prediction?.direction === "UP").length}
@@ -90,7 +90,7 @@ export default function PortfolioPage() {
         </div>
       )}
 
-      <div className="bg-card rounded-xl border border-gray-700 overflow-hidden">
+      <div className="bg-white dark:bg-card rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
         <table className="data-table">
           <thead>
             <tr>
@@ -128,7 +128,7 @@ export default function PortfolioPage() {
                       {h.prediction.direction}
                     </span>
                   ) : (
-                    <span className="text-gray-500">--</span>
+                    <span className="text-gray-400 dark:text-gray-500">--</span>
                   )}
                 </td>
                 <td>

@@ -3,18 +3,13 @@
 @tailwind utilities;
 
 :root {
-  --foreground: #e5e7eb;
-  --background: #111827;
+  --foreground: #1f2937;
+  --background: #f9fafb;
 }
 
 .dark {
   --foreground: #e5e7eb;
   --background: #111827;
-}
-
-.light {
-  --foreground: #1f2937;
-  --background: #ffffff;
 }
 
 body {
@@ -30,8 +25,11 @@ body {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
-::-webkit-scrollbar-thumb {
+.dark ::-webkit-scrollbar-thumb {
   background: #374151;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
   border-radius: 3px;
 }
 
@@ -40,10 +38,10 @@ body {
   @apply w-full text-sm;
 }
 .data-table th {
-  @apply text-left text-gray-400 font-medium py-2 px-3 border-b border-gray-700;
+  @apply text-left font-medium py-2 px-3 border-b text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700;
 }
 .data-table td {
-  @apply py-2 px-3 border-b border-gray-800;
+  @apply py-2 px-3 border-b border-gray-100 dark:border-gray-800;
 }
 
 /* Signal badge */
@@ -51,18 +49,18 @@ body {
   @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
 }
 .signal-up {
-  @apply bg-emerald-400/10 text-emerald-400;
+  @apply bg-emerald-400/10 text-emerald-600 dark:text-emerald-400;
 }
 .signal-down {
-  @apply bg-rose-500/10 text-rose-500;
+  @apply bg-rose-500/10 text-rose-600 dark:text-rose-500;
 }
 .signal-hold {
-  @apply bg-gray-400/10 text-gray-400;
+  @apply bg-gray-400/10 text-gray-600 dark:text-gray-400;
 }
 
 /* Gauge meter */
 .gauge-track {
-  @apply h-2 rounded-full bg-gray-700;
+  @apply h-2 rounded-full bg-gray-200 dark:bg-gray-700;
 }
 .gauge-fill {
   @apply h-2 rounded-full transition-all duration-500;

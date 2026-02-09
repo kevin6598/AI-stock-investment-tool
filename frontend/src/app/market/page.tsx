@@ -56,12 +56,12 @@ export default function MarketPage() {
   return (
     <div>
       <h1 className="text-2xl font-bold mb-2">Market Overview</h1>
-      <p className="text-sm text-gray-400 mb-8">
+      <p className="text-sm text-gray-500 dark:text-gray-400 mb-8">
         AI probability forecasts for major indices and sectors
       </p>
 
       {/* Index probabilities */}
-      <h2 className="text-sm font-medium text-gray-400 mb-3">
+      <h2 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-3">
         Index Probabilities (1M)
       </h2>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -69,13 +69,13 @@ export default function MarketPage() {
           ? [1, 2, 3, 4].map((i) => (
               <div
                 key={i}
-                className="bg-card rounded-xl p-4 border border-gray-700 animate-pulse h-24"
+                className="bg-white dark:bg-card rounded-xl p-4 border border-gray-200 dark:border-gray-700 animate-pulse h-24"
               />
             ))
           : indexPreds.map((p) => (
               <div
                 key={p.ticker}
-                className="bg-card rounded-xl p-4 border border-gray-700"
+                className="bg-white dark:bg-card rounded-xl p-4 border border-gray-200 dark:border-gray-700"
               >
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-bold">{p.ticker}</span>
@@ -94,7 +94,7 @@ export default function MarketPage() {
                 <div className={`text-lg font-mono ${directionColor(p.direction)}`}>
                   P(Up) = {(p.p_up * 100).toFixed(1)}%
                 </div>
-                <div className="text-xs text-gray-400 mt-1">
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                   {formatReturn(p.point_estimate)} expected
                 </div>
               </div>
@@ -102,11 +102,11 @@ export default function MarketPage() {
       </div>
 
       {/* Sector heatmap */}
-      <h2 className="text-sm font-medium text-gray-400 mb-3">
+      <h2 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-3">
         Sector Forecast Heatmap
       </h2>
       {loading ? (
-        <div className="bg-card rounded-xl p-6 border border-gray-700 animate-pulse h-48" />
+        <div className="bg-white dark:bg-card rounded-xl p-6 border border-gray-200 dark:border-gray-700 animate-pulse h-48" />
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {sectorPreds.map((s) => {
@@ -119,10 +119,10 @@ export default function MarketPage() {
             return (
               <div
                 key={p.ticker}
-                className="rounded-lg p-3 border border-gray-700 text-center"
+                className="rounded-lg p-3 border border-gray-200 dark:border-gray-700 text-center"
                 style={{ backgroundColor: bg }}
               >
-                <div className="text-xs text-gray-400">{s.name}</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{s.name}</div>
                 <div className="font-bold text-sm">{p.ticker}</div>
                 <div
                   className={`text-sm font-mono ${directionColor(p.direction)}`}

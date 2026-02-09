@@ -42,7 +42,7 @@ export default function Dashboard() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>
-          <p className="text-sm text-gray-400 mt-1">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             AI-powered stock predictions with multi-modal deep learning
           </p>
         </div>
@@ -57,18 +57,18 @@ export default function Dashboard() {
               health?.status === "healthy" ? "bg-up" : "bg-down"
             }`}
           />
-          <span className="text-gray-400">
+          <span className="text-gray-500 dark:text-gray-400">
             API: {health?.status || "offline"}
           </span>
         </div>
         {health?.model_loaded && (
           <>
             <span className="text-gray-600">|</span>
-            <span className="text-gray-400">
+            <span className="text-gray-500 dark:text-gray-400">
               Model: {health.model_info?.model_type || "unknown"}
             </span>
             <span className="text-gray-600">|</span>
-            <span className="text-gray-400">
+            <span className="text-gray-500 dark:text-gray-400">
               Tickers: {health.model_info?.trained_tickers.length || 0}
             </span>
           </>
@@ -77,14 +77,14 @@ export default function Dashboard() {
 
       {/* Watchlist */}
       <div className="mb-6">
-        <h2 className="text-sm font-medium text-gray-400 mb-3">Watchlist</h2>
+        <h2 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-3">Watchlist</h2>
         <div className="flex flex-wrap gap-2">
           {WATCHLIST.map((t) => (
             <a
               key={t}
               href={`/symbol/${t}`}
-              className="px-3 py-1.5 bg-card rounded-lg text-sm hover:bg-gray-700
-                         transition-colors border border-gray-700"
+              className="px-3 py-1.5 bg-white dark:bg-card rounded-lg text-sm hover:bg-gray-200 dark:hover:bg-gray-700
+                         transition-colors border border-gray-200 dark:border-gray-700"
             >
               {t}
             </a>
@@ -98,11 +98,11 @@ export default function Dashboard() {
           {[1, 2, 3, 4].map((i) => (
             <div
               key={i}
-              className="bg-card rounded-xl p-6 border border-gray-700 animate-pulse"
+              className="bg-white dark:bg-card rounded-xl p-6 border border-gray-200 dark:border-gray-700 animate-pulse"
             >
-              <div className="h-6 bg-gray-700 rounded w-1/4 mb-4" />
-              <div className="h-4 bg-gray-700 rounded w-1/2 mb-2" />
-              <div className="h-4 bg-gray-700 rounded w-2/3" />
+              <div className="h-6 bg-gray-200 dark:bg-gray-700 rounded w-1/4 mb-4" />
+              <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-1/2 mb-2" />
+              <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-2/3" />
             </div>
           ))}
         </div>
@@ -115,7 +115,7 @@ export default function Dashboard() {
           ))}
         </div>
       ) : (
-        <div className="text-center py-12 text-gray-400">
+        <div className="text-center py-12 text-gray-500 dark:text-gray-400">
           <p className="text-lg mb-2">No predictions available</p>
           <p className="text-sm">
             Make sure the FastAPI backend is running on port 8000
