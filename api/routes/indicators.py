@@ -27,7 +27,7 @@ _INDICATOR_GROUPS = {
 @router.get("/indicators/{ticker}", response_model=IndicatorResponse)
 async def get_indicators(
     ticker: str,
-    period: str = Query(default="1y", regex="^(3mo|6mo|1y|2y|5y)$"),
+    period: str = Query(default="1y", pattern="^(3mo|6mo|1y|2y|5y)$"),
     indicators: Optional[str] = Query(
         default=None,
         description="Comma-separated indicator names or group names",

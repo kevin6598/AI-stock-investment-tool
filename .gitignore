@@ -9,3 +9,10 @@ nul
 *.egg-info/
 dist/
 build/
+frontend/.next/
+frontend/node_modules/
+screenshot.png
+take_screenshot.ps1
+artifacts/
+artifacts_backup/
+.retrain_lock
