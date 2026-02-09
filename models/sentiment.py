@@ -341,3 +341,252 @@ def get_sentiment_features(
 
     # Aggregate
     return aggregator.aggregate(scored)
+
+
+# ---------------------------------------------------------------------------
+# Extended Sentiment Components
+# ---------------------------------------------------------------------------
+
+# Event categories with expected market impact direction and magnitude
+_EVENT_CATEGORIES = {
+    "earnings_beat": {"direction": 1, "magnitude": 0.8},
+    "earnings_miss": {"direction": -1, "magnitude": 0.8},
+    "fda_approval": {"direction": 1, "magnitude": 0.9},
+    "merger_acquisition": {"direction": 1, "magnitude": 0.7},
+    "lawsuit": {"direction": -1, "magnitude": 0.5},
+    "ceo_change": {"direction": 0, "magnitude": 0.4},
+    "dividend_increase": {"direction": 1, "magnitude": 0.3},
+    "dividend_cut": {"direction": -1, "magnitude": 0.6},
+    "stock_split": {"direction": 1, "magnitude": 0.2},
+    "guidance_raise": {"direction": 1, "magnitude": 0.6},
+    "guidance_lower": {"direction": -1, "magnitude": 0.7},
+    "buyback": {"direction": 1, "magnitude": 0.4},
+    "regulatory_action": {"direction": -1, "magnitude": 0.6},
+}
+
+_EVENT_KEYWORDS = {
+    "earnings_beat": ["beat", "exceeded", "surpassed", "topped", "above expectations"],
+    "earnings_miss": ["missed", "fell short", "below expectations", "disappointed"],
+    "fda_approval": ["fda approved", "fda approval", "regulatory approval"],
+    "merger_acquisition": ["merger", "acquisition", "acquire", "buyout", "takeover"],
+    "lawsuit": ["lawsuit", "sued", "litigation", "legal action", "class action"],
+    "ceo_change": ["ceo resign", "new ceo", "ceo appointed", "ceo departure"],
+    "dividend_increase": ["dividend increase", "raised dividend", "hiked dividend"],
+    "dividend_cut": ["dividend cut", "slashed dividend", "suspended dividend"],
+    "stock_split": ["stock split", "share split"],
+    "guidance_raise": ["raised guidance", "increased outlook", "raised forecast"],
+    "guidance_lower": ["lowered guidance", "cut outlook", "reduced forecast"],
+    "buyback": ["buyback", "share repurchase", "stock repurchase"],
+    "regulatory_action": ["sec investigation", "regulatory probe", "antitrust"],
+}
+
+# Macro event keywords and their typical market impact
+_MACRO_EVENTS = {
+    "rate_hike": {"keywords": ["rate hike", "raised rates", "tightening"], "impact": -0.5},
+    "rate_cut": {"keywords": ["rate cut", "lowered rates", "easing"], "impact": 0.5},
+    "inflation_high": {"keywords": ["inflation rose", "cpi higher", "prices surged"], "impact": -0.3},
+    "inflation_low": {"keywords": ["inflation fell", "cpi lower", "disinflation"], "impact": 0.3},
+    "jobs_strong": {"keywords": ["jobs beat", "employment surged", "payrolls exceeded"], "impact": 0.2},
+    "jobs_weak": {"keywords": ["jobs miss", "unemployment rose", "layoffs"], "impact": -0.4},
+    "gdp_growth": {"keywords": ["gdp grew", "economic growth", "expansion"], "impact": 0.3},
+    "recession_risk": {"keywords": ["recession", "contraction", "economic slowdown"], "impact": -0.6},
+}
+
+
+class EventClassifier:
+    """Classifies news headlines into event categories with impact scores.
+
+    Uses keyword matching (no ML model required) to detect corporate events
+    and estimate their directional impact.
+    """
+
+    def classify(self, text: str) -> Dict[str, float]:
+        """Classify a headline and return event scores.
+
+        Returns:
+            Dict with keys: event_type, event_direction, event_magnitude,
+                           event_confidence
+        """
+        text_lower = text.lower()
+        best_event = None
+        best_match_count = 0
+
+        for event_type, keywords in _EVENT_KEYWORDS.items():
+            match_count = sum(1 for kw in keywords if kw in text_lower)
+            if match_count > best_match_count:
+                best_match_count = match_count
+                best_event = event_type
+
+        if best_event is not None:
+            info = _EVENT_CATEGORIES[best_event]
+            confidence = min(best_match_count / 3.0, 1.0)
+            return {
+                "event_type": best_event,
+                "event_direction": float(info["direction"]),
+                "event_magnitude": float(info["magnitude"]),
+                "event_confidence": confidence,
+            }
+
+        return {
+            "event_type": "none",
+            "event_direction": 0.0,
+            "event_magnitude": 0.0,
+            "event_confidence": 0.0,
+        }
+
+    def classify_batch(self, texts: List[str]) -> List[Dict[str, float]]:
+        """Classify multiple headlines."""
+        return [self.classify(t) for t in texts]
+
+
+class MacroImpactScorer:
+    """Scores macro-economic news for market impact.
+
+    Detects macro events (rate decisions, inflation, jobs, GDP) and
+    estimates their directional impact on the broad market.
+    """
+
+    def score(self, text: str) -> Dict[str, float]:
+        """Score a single headline for macro impact.
+
+        Returns:
+            Dict with macro_event, macro_impact, macro_confidence
+        """
+        text_lower = text.lower()
+        best_event = None
+        best_score = 0.0
+
+        for event_name, info in _MACRO_EVENTS.items():
+            match_count = sum(1 for kw in info["keywords"] if kw in text_lower)
+            if match_count > 0:
+                score = match_count * abs(info["impact"])
+                if score > best_score:
+                    best_score = score
+                    best_event = event_name
+
+        if best_event is not None:
+            impact = _MACRO_EVENTS[best_event]["impact"]
+            confidence = min(best_score / 2.0, 1.0)
+            return {
+                "macro_event": best_event,
+                "macro_impact": float(impact),
+                "macro_confidence": confidence,
+            }
+
+        return {
+            "macro_event": "none",
+            "macro_impact": 0.0,
+            "macro_confidence": 0.0,
+        }
+
+    def score_batch(self, texts: List[str]) -> List[Dict[str, float]]:
+        return [self.score(t) for t in texts]
+
+
+class KeywordEmbedder:
+    """Creates numerical embedding from keyword frequency analysis.
+
+    Produces a fixed-length vector of keyword category scores that can
+    be used as features in the ML pipeline.
+    """
+
+    def __init__(self):
+        self._categories = {
+            "growth": ["growth", "expand", "increase", "surge", "soar", "rally",
+                       "bullish", "momentum", "breakout", "innovation"],
+            "risk": ["risk", "volatile", "uncertainty", "concern", "warning",
+                     "threat", "downturn", "crisis", "plunge", "crash"],
+            "value": ["undervalued", "cheap", "discount", "bargain", "value",
+                      "dividend", "yield", "income", "buyback", "book value"],
+            "quality": ["strong", "solid", "stable", "consistent", "reliable",
+                        "profitable", "margin", "efficiency", "competitive"],
+            "momentum": ["beat", "exceeded", "outperform", "upgrade", "record",
+                         "high", "acceleration", "strength", "surprise"],
+        }
+
+    def embed(self, text: str) -> Dict[str, float]:
+        """Embed a single text into category scores.
+
+        Returns:
+            Dict mapping category -> normalized score (0 to 1).
+        """
+        words = set(text.lower().split())
+        result = {}
+        for cat, keywords in self._categories.items():
+            matches = sum(1 for kw in keywords if kw in words)
+            result[f"kw_{cat}"] = min(matches / 3.0, 1.0)
+        return result
+
+    def embed_batch(self, texts: List[str]) -> List[Dict[str, float]]:
+        return [self.embed(t) for t in texts]
+
+    @property
+    def feature_names(self) -> List[str]:
+        return [f"kw_{cat}" for cat in self._categories]
+
+
+def get_extended_sentiment_features(
+    ticker: str,
+    model: Optional[SentimentModel] = None,
+    aggregator: Optional[SentimentAggregator] = None,
+) -> Dict[str, float]:
+    """Extended sentiment features including events, macro, and keywords.
+
+    Falls back gracefully if news fetching fails.
+    """
+    base_features = get_sentiment_features(ticker, model, aggregator)
+
+    # Add event and keyword features with defaults
+    extended = {
+        **base_features,
+        "event_direction": 0.0,
+        "event_magnitude": 0.0,
+        "macro_impact": 0.0,
+        "kw_growth": 0.0,
+        "kw_risk": 0.0,
+        "kw_value": 0.0,
+        "kw_quality": 0.0,
+        "kw_momentum": 0.0,
+    }
+
+    try:
+        from data.news_api import fetch_news
+        news_items = fetch_news(ticker)
+        if not news_items:
+            return extended
+
+        titles = [item["title"] for item in news_items if item.get("title")]
+        if not titles:
+            return extended
+
+        # Event classification
+        ec = EventClassifier()
+        events = ec.classify_batch(titles)
+        if events:
+            # Average across headlines, weighted by confidence
+            dirs = [e["event_direction"] * e["event_confidence"] for e in events]
+            mags = [e["event_magnitude"] * e["event_confidence"] for e in events]
+            total_conf = sum(e["event_confidence"] for e in events)
+            if total_conf > 0:
+                extended["event_direction"] = sum(dirs) / total_conf
+                extended["event_magnitude"] = sum(mags) / total_conf
+
+        # Macro impact
+        ms = MacroImpactScorer()
+        macro_scores = ms.score_batch(titles)
+        impacts = [m["macro_impact"] * m["macro_confidence"] for m in macro_scores]
+        total_conf = sum(m["macro_confidence"] for m in macro_scores)
+        if total_conf > 0:
+            extended["macro_impact"] = sum(impacts) / total_conf
+
+        # Keyword embedding
+        ke = KeywordEmbedder()
+        kw_scores = ke.embed_batch(titles)
+        for cat in ke.feature_names:
+            vals = [kw[cat] for kw in kw_scores]
+            extended[cat] = float(np.mean(vals)) if vals else 0.0
+
+    except Exception as e:
+        logger.debug(f"Extended sentiment features unavailable for {ticker}: {e}")
+
+    return extended

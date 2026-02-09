@@ -86,6 +86,62 @@ def compute_technical_features(df: pd.DataFrame) -> pd.DataFrame:
     out["atr_14"] = true_range.rolling(14).mean()
     out["atr_ratio"] = out["atr_14"] / c  # normalized ATR
 
+    # --- Extended indicators ---
+
+    # Stochastic Oscillator
+    low_min = out["Low"].rolling(14).min()
+    high_max = out["High"].rolling(14).max()
+    stoch_denom = (high_max - low_min).replace(0, np.nan)
+    out["stoch_k"] = 100 * (c - low_min) / stoch_denom
+    out["stoch_d"] = out["stoch_k"].rolling(3).mean()
+
+    # ADX (Average Directional Index)
+    plus_dm = out["High"].diff()
+    minus_dm = -out["Low"].diff()
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+    atr_smooth = true_range.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    plus_di = 100 * plus_dm.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean() / atr_smooth.replace(0, np.nan)
+    minus_di = 100 * minus_dm.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean() / atr_smooth.replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    out["adx"] = dx.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+
+    # CCI (Commodity Channel Index)
+    tp = (out["High"] + out["Low"] + c) / 3
+    sma_tp = tp.rolling(20).mean()
+    mad = tp.rolling(20).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    out["cci_20"] = (tp - sma_tp) / (0.015 * mad.replace(0, np.nan))
+
+    # VWAP deviation
+    cumulative_tpv = (tp * out["Volume"]).rolling(20).sum()
+    cumulative_vol = out["Volume"].rolling(20).sum().replace(0, np.nan)
+    vwap = cumulative_tpv / cumulative_vol
+    out["vwap_deviation"] = (c - vwap) / vwap.replace(0, np.nan)
+
+    # Volume spike encoding
+    vol_mean_60 = out["Volume"].rolling(60).mean()
+    vol_std_60 = out["Volume"].rolling(60).std().replace(0, np.nan)
+    vol_z = (out["Volume"] - vol_mean_60) / vol_std_60
+    out["volume_spike"] = (vol_z > 2.0).astype(float)
+    out["volume_spike_intensity"] = vol_z.clip(lower=0)
+
+    # Volatility clustering
+    log_ret_vc = np.log(c / c.shift(1))
+    sq_ret = log_ret_vc ** 2
+    out["vol_cluster_ew"] = sq_ret.ewm(span=21, adjust=False).mean().apply(np.sqrt) * np.sqrt(252)
+    short_vol_c = sq_ret.ewm(span=5, adjust=False).mean()
+    long_vol_c = sq_ret.ewm(span=63, adjust=False).mean().replace(0, np.nan)
+    out["vol_cluster_ratio"] = short_vol_c / long_vol_c
+
+    # Regime features
+    sma_200_r = c.rolling(200).mean()
+    out["regime_trend"] = c / sma_200_r.replace(0, np.nan) - 1.0
+    vol_21_r = log_ret_vc.rolling(21).std() * np.sqrt(252)
+    vol_63_r = log_ret_vc.rolling(63).std() * np.sqrt(252)
+    out["regime_vol_ratio"] = vol_21_r / vol_63_r.replace(0, np.nan)
+    rolling_max_r = c.cummax()
+    out["regime_drawdown"] = c / rolling_max_r - 1.0
+
     return out
 
 
@@ -301,11 +357,19 @@ def compute_nlp_sentiment_features(
         "nlp_negative_ratio": 0.33,
         "nlp_news_volume": 0.0,
         "nlp_sentiment_momentum": 0.0,
+        "nlp_event_direction": 0.0,
+        "nlp_event_magnitude": 0.0,
+        "nlp_macro_impact": 0.0,
+        "nlp_kw_growth": 0.0,
+        "nlp_kw_risk": 0.0,
+        "nlp_kw_value": 0.0,
+        "nlp_kw_quality": 0.0,
+        "nlp_kw_momentum": 0.0,
     }
 
     try:
-        from models.sentiment import get_sentiment_features
-        raw = get_sentiment_features(ticker)
+        from models.sentiment import get_extended_sentiment_features
+        raw = get_extended_sentiment_features(ticker)
         features = {
             "nlp_sentiment_mean": raw.get("sentiment_mean", 0.0),
             "nlp_sentiment_weighted": raw.get("sentiment_weighted", 0.0),
@@ -314,6 +378,14 @@ def compute_nlp_sentiment_features(
             "nlp_negative_ratio": raw.get("negative_ratio", 0.33),
             "nlp_news_volume": float(raw.get("news_volume", 0)),
             "nlp_sentiment_momentum": raw.get("sentiment_momentum", 0.0),
+            "nlp_event_direction": raw.get("event_direction", 0.0),
+            "nlp_event_magnitude": raw.get("event_magnitude", 0.0),
+            "nlp_macro_impact": raw.get("macro_impact", 0.0),
+            "nlp_kw_growth": raw.get("kw_growth", 0.0),
+            "nlp_kw_risk": raw.get("kw_risk", 0.0),
+            "nlp_kw_value": raw.get("kw_value", 0.0),
+            "nlp_kw_quality": raw.get("kw_quality", 0.0),
+            "nlp_kw_momentum": raw.get("kw_momentum", 0.0),
         }
     except Exception as e:
         logger.debug(f"NLP sentiment unavailable for {ticker}: {e}")
@@ -555,6 +627,32 @@ def prune_features(
     return X[selected], selected
 
 
+def add_ticker_embedding_column(
+    panel: pd.DataFrame,
+    ticker_list: Optional[List[str]] = None,
+) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """Add integer ticker_id column for embedding lookup in shared models.
+
+    Args:
+        panel: Panel DataFrame with MultiIndex (date, ticker).
+        ticker_list: Ordered list of tickers. If None, derived from panel.
+
+    Returns:
+        (panel_with_ticker_id, ticker_to_id) mapping.
+    """
+    if ticker_list is None:
+        tickers = sorted(panel.index.get_level_values("ticker").unique().tolist())
+    else:
+        tickers = ticker_list
+
+    ticker_to_id = {t: i for i, t in enumerate(tickers)}
+    panel = panel.copy()
+    panel["ticker_id"] = panel.index.get_level_values("ticker").map(
+        lambda t: ticker_to_id.get(t, 0)
+    )
+    return panel, ticker_to_id
+
+
 def get_feature_groups(panel: pd.DataFrame) -> Dict[str, List[str]]:
     """Return mapping of feature group name to column names.
 
@@ -568,7 +666,9 @@ def get_feature_groups(panel: pd.DataFrame) -> Dict[str, List[str]]:
             c.startswith(p) for p in [
                 "sma_", "ema_", "price_to_sma", "momentum_", "rsi_",
                 "macd", "bb_", "volume_sma", "volume_ratio", "obv",
-                "atr_",
+                "atr_", "stoch_", "adx", "cci_", "vwap_deviation",
+                "volume_spike", "regime_trend", "regime_vol_ratio",
+                "regime_drawdown",
             ]
         )],
         "sentiment": [c for c in all_cols if any(
@@ -583,6 +683,7 @@ def get_feature_groups(panel: pd.DataFrame) -> Dict[str, List[str]]:
             c.startswith(p) for p in [
                 "volatility_", "vol_ratio", "drawdown_", "downside_dev",
                 "return_skew", "return_kurt", "var_5pct", "beta_",
+                "vol_cluster_",
             ]
         )],
     }

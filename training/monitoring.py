@@ -355,3 +355,82 @@ class RetrainingScheduler:
                 return True
 
         return False
+
+
+class WeeklyRetrainingTrigger:
+    """Checks whether a weekly retraining cycle should execute.
+
+    Combines time-based schedule with drift and regime checks.
+    Runs every Sunday (or the specified weekday) unless suppressed
+    by a lock file.
+
+    Usage:
+        trigger = WeeklyRetrainingTrigger()
+        if trigger.should_run():
+            # run retraining pipeline
+            trigger.record_run()
+    """
+
+    def __init__(
+        self,
+        weekday: int = 6,  # 0=Mon, 6=Sun
+        lock_file: str = ".retrain_lock",
+        min_hours_between: float = 120.0,  # ~5 days
+    ):
+        self.weekday = weekday
+        self.lock_file = lock_file
+        self.min_hours_between = min_hours_between
+
+    def should_run(
+        self,
+        drift_detected: bool = False,
+        regime_change: bool = False,
+    ) -> bool:
+        """Check if retraining should trigger.
+
+        Args:
+            drift_detected: Force retrain on model drift.
+            regime_change: Force retrain on regime change.
+
+        Returns:
+            True if retraining should proceed.
+        """
+        import os
+
+        # Drift or regime change -> immediate retrain
+        if drift_detected:
+            logger.info("Weekly trigger: drift detected, forcing retrain")
+            return True
+        if regime_change:
+            logger.info("Weekly trigger: regime changed, forcing retrain")
+            return True
+
+        # Check time since last run
+        if os.path.exists(self.lock_file):
+            try:
+                mtime = os.path.getmtime(self.lock_file)
+                last_run = datetime.fromtimestamp(mtime)
+                hours_since = (datetime.now() - last_run).total_seconds() / 3600
+                if hours_since < self.min_hours_between:
+                    logger.debug(
+                        f"Weekly trigger: {hours_since:.1f}h since last run "
+                        f"(min={self.min_hours_between}h)"
+                    )
+                    return False
+            except Exception:
+                pass
+
+        # Check if it's the right weekday
+        now = datetime.now()
+        if now.weekday() == self.weekday:
+            logger.info(f"Weekly trigger: weekday {self.weekday} matched, time to retrain")
+            return True
+
+        return False
+
+    def record_run(self):
+        """Record that a retraining run completed (update lock file)."""
+        import os
+        with open(self.lock_file, "w") as f:
+            f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        logger.info("Weekly trigger: recorded run timestamp")

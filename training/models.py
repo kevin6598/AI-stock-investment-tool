@@ -710,6 +710,264 @@ class TransformerModel(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 5. Hybrid Multi-Modal Model
+# ---------------------------------------------------------------------------
+
+class HybridMultiModalModel(BaseModel):
+    """Hybrid multi-modal deep learning model wrapping HybridMultiModalNet.
+
+    Combines temporal encoding (LSTM), technical indicator embeddings,
+    VAE latent factors, sentiment encoding, and ticker embeddings
+    via a multi-modal fusion engine.
+
+    Requires PyTorch. Data must include sequence context.
+    """
+
+    def __init__(self, params: Optional[Dict] = None):
+        defaults = {
+            "hidden_dim": 128,
+            "fusion_dim": 128,
+            "vae_latent_dim": 16,
+            "n_quantiles": 7,
+            "dropout": 0.2,
+            "learning_rate": 1e-3,
+            "batch_size": 64,
+            "epochs": 100,
+            "patience": 15,
+            "sequence_length": 60,
+            "n_tickers": 50,
+            "sentiment_dim": 7,
+        }
+        merged = {**defaults, **(params or {})}
+        super().__init__(merged)
+        self.net = None
+        self.scaler = StandardScaler()
+        self.feature_names = []  # type: List[str]
+        self._input_size = 0
+        self._device = "cpu"
+        self._quantiles_list = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
+
+    def _build_sequences(self, X, y=None):
+        seq_len = self.params["sequence_length"]
+        n = X.shape[0]
+        if n <= seq_len:
+            pad_len = seq_len - n + 1
+            X = np.vstack([np.zeros((pad_len, X.shape[1])), X])
+            if y is not None:
+                y = np.concatenate([np.zeros(pad_len), y])
+            n = X.shape[0]
+        X_seq, y_seq = [], []
+        for i in range(seq_len, n):
+            X_seq.append(X[i - seq_len:i])
+            if y is not None:
+                y_seq.append(y[i])
+        X_seq = np.array(X_seq, dtype=np.float32)
+        y_seq = np.array(y_seq, dtype=np.float32) if y is not None else None
+        return X_seq, y_seq
+
+    def fit(self, X_train: np.ndarray, y_train: np.ndarray,
+            X_val: Optional[np.ndarray] = None,
+            y_val: Optional[np.ndarray] = None,
+            feature_names: Optional[List[str]] = None):
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import TensorDataset, DataLoader
+        from models.hybrid_model import HybridMultiModalNet
+
+        self.feature_names = feature_names or [f"f{i}" for i in range(X_train.shape[1])]
+        self._input_size = X_train.shape[1]
+
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_train_seq, y_train_seq = self._build_sequences(X_train_scaled, y_train)
+
+        if X_val is not None and y_val is not None:
+            X_val_scaled = self.scaler.transform(X_val)
+            X_val_seq, y_val_seq = self._build_sequences(X_val_scaled, y_val)
+        else:
+            X_val_seq, y_val_seq = None, None
+
+        self.net = HybridMultiModalNet(
+            n_features=self._input_size,
+            n_tickers=self.params["n_tickers"],
+            seq_len=self.params["sequence_length"],
+            hidden_dim=self.params["hidden_dim"],
+            vae_latent_dim=self.params["vae_latent_dim"],
+            sentiment_dim=self.params["sentiment_dim"],
+            fusion_dim=self.params["fusion_dim"],
+            n_quantiles=self.params["n_quantiles"],
+            dropout=self.params["dropout"],
+        ).to(self._device)
+
+        from models.losses import MultiTaskLoss
+        from models.vae import VAELoss
+        criterion = MultiTaskLoss(quantiles=self._quantiles_list)
+        vae_criterion = VAELoss(beta_max=0.5, warmup_steps=500)
+
+        optimizer = torch.optim.Adam(
+            self.net.parameters(),
+            lr=self.params["learning_rate"],
+            weight_decay=1e-5,
+        )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=self.params["epochs"], eta_min=1e-6,
+        )
+
+        train_ds = TensorDataset(
+            torch.from_numpy(X_train_seq),
+            torch.from_numpy(y_train_seq),
+        )
+        train_loader = DataLoader(
+            train_ds, batch_size=self.params["batch_size"], shuffle=True,
+        )
+
+        best_val_loss = float("inf")
+        patience_counter = 0
+
+        for epoch in range(self.params["epochs"]):
+            self.net.train()
+            for X_b, y_b in train_loader:
+                X_b = X_b.to(self._device)
+                y_b = y_b.to(self._device)
+                batch_size = X_b.size(0)
+
+                x_static = X_b[:, -1, :]
+                ticker_ids = torch.zeros(batch_size, dtype=torch.long, device=self._device)
+
+                optimizer.zero_grad()
+                out = self.net(X_b, x_static, ticker_ids)
+
+                task_loss = criterion(
+                    out["quantiles"], out["p_up"],
+                    out["quantiles"][:, 3],  # median as point estimate
+                    y_b,
+                )
+                vae_loss = vae_criterion(
+                    out["vae_reconstruction"], x_static,
+                    out["vae_mu"], out["vae_log_var"],
+                )
+                total_loss = task_loss["total"] + 0.1 * vae_loss["total"]
+                total_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
+                optimizer.step()
+
+            scheduler.step()
+
+            if X_val_seq is not None:
+                self.net.eval()
+                with torch.no_grad():
+                    Xv = torch.from_numpy(X_val_seq).to(self._device)
+                    yv = torch.from_numpy(y_val_seq).to(self._device)
+                    xv_static = Xv[:, -1, :]
+                    tv_ids = torch.zeros(Xv.size(0), dtype=torch.long, device=self._device)
+                    v_out = self.net(Xv, xv_static, tv_ids)
+                    v_task = criterion(
+                        v_out["quantiles"], v_out["p_up"],
+                        v_out["quantiles"][:, 3], yv,
+                    )
+                    val_loss = v_task["total"].item()
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    self._best_state = {k: v.clone() for k, v in self.net.state_dict().items()}
+                else:
+                    patience_counter += 1
+                    if patience_counter >= self.params["patience"]:
+                        break
+
+        if hasattr(self, "_best_state"):
+            self.net.load_state_dict(self._best_state)
+
+        self.is_fitted = True
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        import torch
+        X_scaled = self.scaler.transform(X)
+        X_seq, _ = self._build_sequences(X_scaled)
+
+        self.net.eval()
+        with torch.no_grad():
+            X_t = torch.from_numpy(X_seq).to(self._device)
+            x_static = X_t[:, -1, :]
+            ticker_ids = torch.zeros(X_t.size(0), dtype=torch.long, device=self._device)
+            out = self.net(X_t, x_static, ticker_ids)
+            preds = out["quantiles"][:, 3].cpu().numpy()  # median
+
+        pad_len = X.shape[0] - len(preds)
+        if pad_len > 0:
+            preds = np.concatenate([np.full(pad_len, np.nan), preds])
+        return preds
+
+    def predict_quantiles(self, X: np.ndarray,
+                          quantiles: Optional[List[float]] = None) -> Dict[float, np.ndarray]:
+        import torch
+        X_scaled = self.scaler.transform(X)
+        X_seq, _ = self._build_sequences(X_scaled)
+
+        self.net.eval()
+        with torch.no_grad():
+            X_t = torch.from_numpy(X_seq).to(self._device)
+            x_static = X_t[:, -1, :]
+            ticker_ids = torch.zeros(X_t.size(0), dtype=torch.long, device=self._device)
+            out = self.net(X_t, x_static, ticker_ids)
+            q_preds = out["quantiles"].cpu().numpy()
+
+        pad_len = X.shape[0] - q_preds.shape[0]
+        trained_qs = self._quantiles_list
+
+        if quantiles is None:
+            quantiles = trained_qs
+
+        result = {}
+        for q in quantiles:
+            if q in trained_qs:
+                idx = trained_qs.index(q)
+                vals = q_preds[:, idx]
+            else:
+                lower_qs = [tq for tq in trained_qs if tq <= q]
+                upper_qs = [tq for tq in trained_qs if tq >= q]
+                if not lower_qs:
+                    vals = q_preds[:, 0]
+                elif not upper_qs:
+                    vals = q_preds[:, -1]
+                else:
+                    lq, uq = max(lower_qs), min(upper_qs)
+                    li, ui = trained_qs.index(lq), trained_qs.index(uq)
+                    w = (q - lq) / (uq - lq) if uq != lq else 0.5
+                    vals = q_preds[:, li] * (1 - w) + q_preds[:, ui] * w
+
+            if pad_len > 0:
+                vals = np.concatenate([np.full(pad_len, np.nan), vals])
+            result[q] = vals
+        return result
+
+    def predict_full(self, X: np.ndarray) -> Dict[str, np.ndarray]:
+        """Predict with all output heads (retail + auxiliary)."""
+        import torch
+        X_scaled = self.scaler.transform(X)
+        X_seq, _ = self._build_sequences(X_scaled)
+
+        self.net.eval()
+        with torch.no_grad():
+            X_t = torch.from_numpy(X_seq).to(self._device)
+            x_static = X_t[:, -1, :]
+            ticker_ids = torch.zeros(X_t.size(0), dtype=torch.long, device=self._device)
+            out = self.net(X_t, x_static, ticker_ids)
+
+        result = {}
+        for key, val in out.items():
+            if isinstance(val, torch.Tensor):
+                result[key] = val.cpu().numpy()
+        return result
+
+    def get_feature_importance(self) -> Dict[str, float]:
+        if not self.feature_names:
+            return {}
+        n = len(self.feature_names)
+        return {name: 1.0 / n for name in self.feature_names}
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -718,6 +976,7 @@ MODEL_REGISTRY = {
     "lightgbm": LightGBMModel,
     "lstm_attention": LSTMAttentionModel,
     "transformer": TransformerModel,
+    "hybrid_multimodal": HybridMultiModalModel,
 }
 
 

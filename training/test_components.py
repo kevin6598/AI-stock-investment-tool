@@ -266,6 +266,124 @@ with tempfile.TemporaryDirectory() as tmpdir:
     active = registry.get_active_model("elastic_net", "1M")
     test("Model activated", active is not None and active.is_active)
 
+# --- 10. Extended Indicators ---
+print("\n10. Extended Indicators")
+tech2 = compute_technical_features(stock_df)
+test("Stochastic oscillator", "stoch_k" in tech2.columns and "stoch_d" in tech2.columns)
+test("ADX computed", "adx" in tech2.columns)
+test("CCI computed", "cci_20" in tech2.columns)
+test("VWAP deviation", "vwap_deviation" in tech2.columns)
+test("Volume spike", "volume_spike" in tech2.columns and "volume_spike_intensity" in tech2.columns)
+test("Vol clustering", "vol_cluster_ew" in tech2.columns and "vol_cluster_ratio" in tech2.columns)
+test("Regime features", "regime_trend" in tech2.columns and "regime_vol_ratio" in tech2.columns)
+
+# --- 11. Ticker Embedding ---
+print("\n11. Ticker Embedding")
+from training.feature_engineering import add_ticker_embedding_column, build_panel_dataset
+
+mini_dfs = {"TEST1": stock_df.copy(), "TEST2": stock_df.copy()}
+mini_infos = {"TEST1": stock_info, "TEST2": stock_info}
+mini_panel = build_panel_dataset(mini_dfs, mini_infos, stock_df, [21, 63])
+panel_emb, t2id = add_ticker_embedding_column(mini_panel, ["TEST1", "TEST2"])
+test("Ticker ID column added", "ticker_id" in panel_emb.columns)
+test("Ticker mapping correct", t2id == {"TEST1": 0, "TEST2": 1},
+     f"mapping: {t2id}")
+
+# --- 12. Extended Sentiment ---
+print("\n12. Extended Sentiment Components")
+from models.sentiment import EventClassifier, MacroImpactScorer, KeywordEmbedder
+
+ec = EventClassifier()
+ev_result = ec.classify("Company beat earnings expectations and raised guidance")
+test("Event classified", ev_result["event_type"] != "none",
+     f"type={ev_result['event_type']}")
+
+ms = MacroImpactScorer()
+macro_result = ms.score("Fed raised rates amid inflation concerns")
+test("Macro scored", macro_result["macro_event"] != "none",
+     f"event={macro_result['macro_event']}, impact={macro_result['macro_impact']:.2f}")
+
+ke = KeywordEmbedder()
+kw_result = ke.embed("Strong growth and bullish momentum with innovation")
+test("Keywords embedded", kw_result.get("kw_growth", 0) > 0,
+     f"scores: {kw_result}")
+
+# --- 13. PyTorch Modules ---
+print("\n13. PyTorch Sub-Modules")
+try:
+    import torch
+    from models.losses import MultiTaskLoss
+    from models.vae import FinancialVAE, VAELoss
+    from models.indicator_embedding import TechnicalIndicatorEmbedding
+    from models.output_heads import RetailDirectionalHead, AuxiliaryFactorHead
+    from models.fusion import MultiModalFusionEngine
+
+    # Test VAE
+    vae = FinancialVAE(input_dim=32, hidden_dim=64, latent_dim=8)
+    x = torch.randn(4, 32)
+    vae_out = vae(x)
+    test("VAE forward pass", vae_out["z"].shape == (4, 8), f"latent shape: {vae_out['z'].shape}")
+
+    # Test TI Embedding
+    ti_emb = TechnicalIndicatorEmbedding(
+        group_dims={"momentum": 5, "volume": 3},
+        embed_dim=16, fusion_dim=32,
+    )
+    ti_out = ti_emb({"momentum": torch.randn(4, 5), "volume": torch.randn(4, 3)})
+    test("TI embedding", ti_out.shape == (4, 32), f"shape: {ti_out.shape}")
+
+    # Test output heads
+    retail = RetailDirectionalHead(input_dim=64, n_quantiles=7)
+    r_out = retail(torch.randn(4, 64))
+    test("Retail head outputs", "p_up" in r_out and "quantiles" in r_out,
+         f"keys: {list(r_out.keys())}")
+
+    aux = AuxiliaryFactorHead(input_dim=64)
+    a_out = aux(torch.randn(4, 64))
+    test("Aux head outputs", "vol_forecast" in a_out and "regime_logits" in a_out)
+
+    # Test fusion
+    fusion = MultiModalFusionEngine(
+        temporal_dim=64, indicator_dim=64, sentiment_dim=64, vae_dim=8, fusion_dim=64,
+    )
+    f_out = fusion(torch.randn(4, 64), torch.randn(4, 64), torch.randn(4, 64), torch.randn(4, 8))
+    test("Fusion engine", f_out.shape == (4, 64), f"shape: {f_out.shape}")
+
+    # Test multi-task loss
+    loss_fn = MultiTaskLoss(quantiles=[0.1, 0.5, 0.9])
+    loss_out = loss_fn(
+        torch.randn(4, 3), torch.sigmoid(torch.randn(4)),
+        torch.randn(4), torch.randn(4),
+    )
+    test("Multi-task loss", "total" in loss_out, f"loss={loss_out['total'].item():.4f}")
+
+except ImportError:
+    test("PyTorch modules (skipped, no torch)", True, "torch not installed")
+
+# --- 14. Hybrid Model ---
+print("\n14. Hybrid Multi-Modal Model")
+try:
+    import torch
+    hybrid = create_model("hybrid_multimodal", {
+        "epochs": 3, "sequence_length": 20, "patience": 2,
+        "hidden_dim": 32, "fusion_dim": 32, "vae_latent_dim": 4,
+        "n_tickers": 5, "batch_size": 16,
+    })
+    hybrid.fit(X_train, y_train, X_val, y_val, feature_names=feature_cols)
+    hybrid_preds = hybrid.predict(X_test)
+    test("Hybrid model predicts", len(hybrid_preds) == len(X_test))
+    hybrid_q = hybrid.predict_quantiles(X_test)
+    test("Hybrid model quantiles", len(hybrid_q) >= 3, f"{list(hybrid_q.keys())}")
+except ImportError:
+    test("Hybrid model (skipped, no torch)", True, "torch not installed")
+
+# --- 15. Monitoring ---
+print("\n15. Weekly Retraining Trigger")
+from training.monitoring import WeeklyRetrainingTrigger
+trigger = WeeklyRetrainingTrigger(min_hours_between=0)
+test("Trigger drift force", trigger.should_run(drift_detected=True))
+test("Trigger regime force", trigger.should_run(regime_change=True))
+
 # --- Summary ---
 print("\n" + "=" * 60)
 passed = sum(1 for _, p in results if p)

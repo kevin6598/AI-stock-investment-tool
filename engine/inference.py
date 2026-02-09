@@ -146,11 +146,38 @@ class ModelLoader:
             return None
 
 
+class ZeroShotInference:
+    """Zero-shot inference for unseen tickers.
+
+    When a ticker is not in the training set, we use ticker_id=0 (the
+    zero-shot embedding) and apply a confidence discount.
+
+    The model learns a generic stock representation for ticker_id=0
+    during training via occasional random masking of ticker embeddings.
+    """
+
+    def __init__(self, confidence_discount: float = 0.5):
+        self.confidence_discount = confidence_discount
+
+    def is_zero_shot(self, ticker: str, trained_tickers: Optional[List[str]] = None) -> bool:
+        """Check if a ticker requires zero-shot inference."""
+        if trained_tickers is None:
+            return True
+        return ticker.upper() not in [t.upper() for t in trained_tickers]
+
+    def adjust_confidence(self, confidence: float) -> float:
+        """Discount confidence for zero-shot predictions."""
+        return confidence * self.confidence_discount
+
+
 class InferencePipeline:
     """End-to-end inference pipeline.
 
     Orchestrates data fetching, feature engineering, model prediction,
     regime classification, portfolio optimization, and risk controls.
+
+    Supports zero-shot inference for tickers not in the training set
+    by using ticker_id=0 and discounting confidence.
 
     Usage:
         pipeline = InferencePipeline(
@@ -175,12 +202,15 @@ class InferencePipeline:
         market_ticker: str = "SPY",
         data_period: str = "5y",
         model_loader: Optional[ModelLoader] = None,
+        trained_tickers: Optional[List[str]] = None,
     ):
         self.tickers = [t.upper() for t in tickers]
         self.model_type = model_type
         self.market_ticker = market_ticker.upper()
         self.data_period = data_period
         self.model_loader = model_loader
+        self.trained_tickers = trained_tickers
+        self.zero_shot = ZeroShotInference()
 
     def run(self, horizon_name: str = "1M") -> InferenceResult:
         """Execute the full inference pipeline.
