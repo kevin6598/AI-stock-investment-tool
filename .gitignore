@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.idea/
+.venv/
+.claude/
+model_store/
+portfolio.db
+nul
+*.egg-info/
+dist/
+build/
