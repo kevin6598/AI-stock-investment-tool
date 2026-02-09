@@ -430,7 +430,23 @@ def build_panel_dataset(
         panels.append(feat)
 
     panel = pd.concat(panels)
-    panel = panel.reset_index().rename(columns={"index": "date"})
+    panel = panel.reset_index()
+    # The index name varies: None, "index", "Date", "date" depending on yfinance version
+    date_col = None
+    for candidate in ["date", "Date", "index"]:
+        if candidate in panel.columns:
+            date_col = candidate
+            break
+    if date_col is None:
+        # First column that looks like a datetime
+        for col in panel.columns:
+            if pd.api.types.is_datetime64_any_dtype(panel[col]):
+                date_col = col
+                break
+    if date_col is None:
+        raise KeyError("Could not find date column after reset_index()")
+    if date_col != "date":
+        panel = panel.rename(columns={date_col: "date"})
     panel = panel.set_index(["date", "ticker"]).sort_index()
 
     return panel
