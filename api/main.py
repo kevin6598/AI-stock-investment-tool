@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from api.model_cache import ModelCache
 from api.feature_pipeline import ServingFeaturePipeline
 from api.routes import predict, indicators, sentiment, health
+from api.auth import APIKeyMiddleware, RateLimiter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 # Global instances
 model_cache = ModelCache()
 feature_pipeline = ServingFeaturePipeline()
+rate_limiter = RateLimiter(max_requests=100, window_seconds=60)
 
 
 @asynccontextmanager
@@ -63,6 +65,15 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# API Key authentication (enabled via API_KEY env var)
+api_key = os.environ.get("API_KEY", "")
+if api_key:
+    app.add_middleware(
+        APIKeyMiddleware,
+        api_keys=[api_key],
+    )
+    logger.info("API key authentication enabled")
 
 # CORS
 app.add_middleware(

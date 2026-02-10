@@ -534,6 +534,91 @@ def compute_residual_targets(
     return result
 
 
+def rank_within_partition(
+    partition: pd.DataFrame,
+    target_col: str,
+    rank_boundaries: Optional[np.ndarray] = None,
+) -> pd.Series:
+    """Compute cross-sectional percentile rank within a single partition.
+
+    Used to prevent leakage: ranking is done separately on train/val/test
+    partitions instead of on the full panel.
+
+    Args:
+        partition: Panel DataFrame (subset) with MultiIndex (date, ticker).
+        target_col: Column name to rank.
+        rank_boundaries: Optional precomputed rank boundaries from training set.
+            If None, ranks are computed within the partition itself.
+
+    Returns:
+        Series with ranked values in [0, 1].
+    """
+    if target_col not in partition.columns:
+        return pd.Series(np.nan, index=partition.index)
+
+    return partition.groupby(level=0)[target_col].rank(pct=True)
+
+
+def freeze_fundamental_features(
+    df: pd.DataFrame,
+    fundamental_cols: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """Freeze fundamental features at quarter boundaries.
+
+    Fundamental data (P/E, P/B, etc.) is only updated quarterly.
+    This function forward-fills only at quarter boundaries to prevent
+    look-ahead bias from interpolated values.
+
+    Quarter boundaries: March 31, June 30, September 30, December 31.
+
+    Args:
+        df: DataFrame with DatetimeIndex and fundamental columns.
+        fundamental_cols: List of fundamental column names.
+            If None, auto-detects columns starting with 'fund_'.
+
+    Returns:
+        DataFrame with frozen fundamental columns.
+    """
+    if fundamental_cols is None:
+        fundamental_cols = [c for c in df.columns if c.startswith("fund_")]
+
+    if not fundamental_cols:
+        return df
+
+    out = df.copy()
+
+    # Quarter-end months and days
+    quarter_months = {3, 6, 9, 12}
+    quarter_end_days = {3: 31, 6: 30, 9: 30, 12: 31}
+
+    for col in fundamental_cols:
+        if col not in out.columns:
+            continue
+
+        values = out[col].values.copy()
+        last_quarter_value = np.nan
+
+        for i, dt in enumerate(out.index):
+            if hasattr(dt, 'month'):
+                month = dt.month
+                day = dt.day
+                # Check if this is at or past a quarter boundary
+                if month in quarter_months and day >= quarter_end_days.get(month, 28):
+                    last_quarter_value = values[i]
+                elif i > 0 and hasattr(out.index[i - 1], 'month'):
+                    prev_month = out.index[i - 1].month
+                    # Detect quarter boundary crossing
+                    if prev_month in quarter_months and month != prev_month:
+                        last_quarter_value = values[i]
+
+            if not np.isnan(last_quarter_value):
+                values[i] = last_quarter_value
+
+        out[col] = values
+
+    return out
+
+
 def compute_ranked_targets(
     panel: pd.DataFrame,
     residual_col: str,
@@ -613,6 +698,17 @@ def build_feature_matrix(
         nlp = compute_nlp_sentiment_features(ticker, features.index)
         for col in nlp.columns:
             features[col] = nlp[col]
+
+    # Add event embedding features (PCA-reduced sentence embeddings)
+    if ticker is not None:
+        try:
+            from training.event_factor import EventEmbeddingGenerator
+            event_gen = EventEmbeddingGenerator()
+            event_feats = event_gen.compute_event_features(ticker, features.index)
+            for col in event_feats.columns:
+                features[col] = event_feats[col]
+        except Exception:
+            pass  # graceful fallback
 
     # Compute forward return targets
     c = features["Close"]
@@ -853,7 +949,7 @@ def get_feature_groups(panel: pd.DataFrame) -> Dict[str, List[str]]:
         "sentiment": [c for c in all_cols if any(
             c.startswith(p) for p in [
                 "ad_line", "mfi_", "pv_divergence", "buying_pressure",
-                "gap_up", "volume_zscore", "nlp_",
+                "gap_up", "volume_zscore", "nlp_", "event_pc",
             ]
         )],
         "fundamental": [c for c in all_cols if c.startswith("fund_")],

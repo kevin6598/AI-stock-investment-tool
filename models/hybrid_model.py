@@ -129,12 +129,14 @@ class HybridMultiModalNet(nn.Module):
         fusion_dim: int = 128,
         n_quantiles: int = 7,
         dropout: float = 0.2,
+        ablation_config: Optional[Dict[str, bool]] = None,
     ):
         super().__init__()
         self.n_features = n_features
         self.seq_len = seq_len
         self.hidden_dim = hidden_dim
         self.fusion_dim = fusion_dim
+        self.ablation_config = ablation_config or {}
 
         # Ticker embedding
         self.ticker_embedding = nn.Embedding(
@@ -239,6 +241,8 @@ class HybridMultiModalNet(nn.Module):
 
         # 1. Temporal encoding
         temporal_emb = self.temporal_encoder(x_seq)  # (batch, hidden_dim)
+        if self.ablation_config.get("disable_temporal"):
+            temporal_emb = torch.zeros_like(temporal_emb)
 
         # 2. Technical indicator embedding
         if self.ti_embedding is not None and ti_group_inputs is not None:
@@ -247,22 +251,30 @@ class HybridMultiModalNet(nn.Module):
             ti_emb = self._ti_fallback(x_static)
         else:
             ti_emb = torch.zeros(batch_size, 64, device=x_seq.device)
+        if self.ablation_config.get("disable_ti_embedding"):
+            ti_emb = torch.zeros_like(ti_emb)
 
         # 3. VAE latent factors (skip reconstruction at inference)
         vae_out = self.vae(x_static, compute_reconstruction=self.training)
         vae_emb = vae_out["z"]  # (batch, latent_dim)
+        if self.ablation_config.get("disable_vae"):
+            vae_emb = torch.zeros_like(vae_emb)
 
         # 4. Sentiment embedding
         if sentiment_features is not None:
             sent_emb = self.sentiment_encoder(sentiment_features)  # (batch, 64)
         else:
             sent_emb = torch.zeros(batch_size, 64, device=x_seq.device)
+        if self.ablation_config.get("disable_sentiment"):
+            sent_emb = torch.zeros_like(sent_emb)
 
         # 5. Fusion
         fused = self.fusion(temporal_emb, ti_emb, sent_emb, vae_emb)  # (batch, fusion_dim)
 
         # 6. Ticker embedding
         ticker_emb = self.ticker_embedding(ticker_ids)  # (batch, 32)
+        if self.ablation_config.get("disable_ticker_embedding"):
+            ticker_emb = torch.zeros_like(ticker_emb)
 
         # 7. Combine and predict
         combined = torch.cat([fused, ticker_emb], dim=-1)

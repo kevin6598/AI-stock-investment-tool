@@ -438,6 +438,7 @@ def evaluate_model_on_fold(
     test_df: pd.DataFrame,
     target_col: str,
     feature_cols: List[str],
+    rank_target: bool = False,
 ) -> FoldResult:
     """Run a single walk-forward fold evaluation.
 
@@ -448,10 +449,27 @@ def evaluate_model_on_fold(
         test_df: Test data.
         target_col: Name of the target column.
         feature_cols: List of feature column names.
+        rank_target: If True, compute cross-sectional ranks separately
+            per partition to prevent leakage.
 
     Returns:
         FoldResult with prediction and investment metrics.
     """
+    # If rank_target is True, compute ranks within each partition separately
+    if rank_target and target_col.startswith("ranked_target_"):
+        # Extract the residual column name from the ranked target name
+        # e.g., "ranked_target_21d" -> "residual_return_21d"
+        horizon = target_col.replace("ranked_target_", "")
+        residual_col = "residual_return_{}".format(horizon)
+        if residual_col in train_df.columns:
+            from training.feature_engineering import rank_within_partition
+            train_df = train_df.copy()
+            val_df = val_df.copy()
+            test_df = test_df.copy()
+            train_df[target_col] = rank_within_partition(train_df, residual_col)
+            val_df[target_col] = rank_within_partition(val_df, residual_col)
+            test_df[target_col] = rank_within_partition(test_df, residual_col)
+
     X_train = train_df[feature_cols].values.astype(np.float32)
     y_train = train_df[target_col].values.astype(np.float32)
     X_val = val_df[feature_cols].values.astype(np.float32)

@@ -26,6 +26,9 @@ class BacktestConfig:
     slippage_bps: float = 5.0  # basis points slippage
     volatility_slippage: bool = True  # use vol-adjusted slippage
     slippage_vol_multiplier: float = 0.1  # multiplier for vol-adjusted slippage
+    turnover_gamma: float = 0.001  # quadratic turnover penalty coefficient
+    market_impact_coeff: float = 0.1  # sqrt market impact coefficient
+    min_adv: float = 1_000_000.0  # minimum average daily volume for liquidity filter
 
 
 @dataclass
@@ -41,6 +44,73 @@ class BacktestResult:
     summary: Dict[str, float]
 
 
+def compute_market_impact(
+    position_size: float,
+    adv: float,
+    impact_coeff: float = 0.1,
+) -> float:
+    """Compute market impact using the square-root model.
+
+    impact = coeff * sqrt(position_size / adv)
+
+    Args:
+        position_size: Absolute position size.
+        adv: Average daily volume (in same units).
+        impact_coeff: Impact coefficient.
+
+    Returns:
+        Market impact cost (as fraction).
+    """
+    return impact_coeff * np.sqrt(abs(position_size) / max(adv, 1.0))
+
+
+def estimate_capacity(
+    daily_returns: np.ndarray,
+    adv_series: np.ndarray,
+    target_sharpe_ratio: float = 1.0,
+    impact_coeff: float = 0.1,
+) -> Dict:
+    """Estimate strategy capacity: max AUM where Sharpe >= target.
+
+    Args:
+        daily_returns: Daily strategy returns array.
+        adv_series: Average daily volume per period.
+        target_sharpe_ratio: Minimum acceptable Sharpe ratio.
+        impact_coeff: Market impact coefficient.
+
+    Returns:
+        Dict with max_aum, sharpe_at_max, limiting_factor.
+    """
+    if len(daily_returns) < 21:
+        return {"max_aum": 0.0, "sharpe_at_max": 0.0, "limiting_factor": "insufficient_data"}
+
+    base_sharpe = np.mean(daily_returns) / max(np.std(daily_returns), 1e-8) * np.sqrt(252)
+    mean_adv = np.mean(adv_series) if len(adv_series) > 0 else 1e6
+
+    # Binary search for max AUM
+    low, high = 1e4, 1e10
+    max_aum = low
+
+    for _ in range(50):
+        mid = (low + high) / 2
+        # Estimate impact drag at this AUM level
+        participation_rate = mid / (mean_adv * 252)
+        impact_drag = impact_coeff * np.sqrt(participation_rate)
+        adjusted_sharpe = base_sharpe - impact_drag * np.sqrt(252)
+
+        if adjusted_sharpe >= target_sharpe_ratio:
+            max_aum = mid
+            low = mid
+        else:
+            high = mid
+
+    return {
+        "max_aum": float(max_aum),
+        "sharpe_at_max": float(base_sharpe - impact_coeff * np.sqrt(max_aum / (mean_adv * 252)) * np.sqrt(252)),
+        "limiting_factor": "market_impact",
+    }
+
+
 class Backtester:
     """Walk-forward backtesting engine with transaction costs."""
 
@@ -53,6 +123,7 @@ class Backtester:
         realized_returns: np.ndarray,
         weights: np.ndarray,
         realized_volatility: Optional[np.ndarray] = None,
+        adv: Optional[np.ndarray] = None,
     ) -> BacktestResult:
         """Run walk-forward backtest.
 
@@ -93,6 +164,7 @@ class Backtester:
         turnover_sum = 0.0
         weight_history = []
 
+        total_impact = 0.0
         prev_pos = 0.0
         for i in range(n):
             # Gross return (before costs)
@@ -102,13 +174,25 @@ class Backtester:
             trade = abs(positions[i] - prev_pos)
             linear_cost = trade * linear_cost_rate
 
+            # Quadratic turnover penalty
+            quadratic_cost = self.config.turnover_gamma * (trade ** 2)
+
             # Slippage: vol-adjusted or flat
             if self.config.volatility_slippage and realized_volatility is not None:
                 vol_slip = trade * realized_volatility[i] * self.config.slippage_vol_multiplier
             else:
                 vol_slip = trade * self.config.slippage_bps / 10000.0
 
-            cost = linear_cost + vol_slip
+            # Market impact (sqrt model)
+            if adv is not None and adv[i] > 0:
+                impact = compute_market_impact(
+                    trade, adv[i], self.config.market_impact_coeff,
+                )
+            else:
+                impact = 0.0
+            total_impact += impact
+
+            cost = linear_cost + vol_slip + quadratic_cost + impact
             total_costs += cost
             turnover_sum += trade
 
@@ -170,6 +254,9 @@ class Backtester:
         # Cost drag
         cost_drag_annual = total_costs / max(n, 1) * 252
 
+        # Net Sharpe after market impact
+        net_sharpe_after_impact = sharpe  # already includes impact in net returns
+
         summary = {
             "total_return": float(total_return),
             "annual_return": float(annual_return),
@@ -182,8 +269,18 @@ class Backtester:
             "total_costs": float(total_costs),
             "cost_drag_annual": float(cost_drag_annual),
             "gross_sharpe_ratio": float(gross_sharpe),
+            "market_impact_total": float(total_impact),
+            "net_sharpe_after_impact": float(net_sharpe_after_impact),
             "n_periods": n,
         }
+
+        # Add capacity estimate if ADV data provided
+        if adv is not None and len(adv) > 0:
+            capacity = estimate_capacity(
+                daily_returns, adv,
+                impact_coeff=self.config.market_impact_coeff,
+            )
+            summary["capacity_aum"] = capacity["max_aum"]
 
         return BacktestResult(
             equity_curve=equity_curve,

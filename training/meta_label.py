@@ -25,19 +25,57 @@ class TripleBarrierConfig:
     lower_barrier_multiplier: float = 2.0
     max_holding_period: int = 21  # trading days
     volatility_lookback: int = 21
+    use_atr: bool = True
+    atr_period: int = 14
+
+
+def compute_atr(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    period: int = 14,
+) -> np.ndarray:
+    """Compute Average True Range.
+
+    Args:
+        high: High prices array.
+        low: Low prices array.
+        close: Close prices array.
+        period: ATR lookback period.
+
+    Returns:
+        ATR array of same length as inputs.
+    """
+    n = len(close)
+    tr = np.zeros(n)
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        hl = high[i] - low[i]
+        hc = abs(high[i] - close[i - 1])
+        lc = abs(low[i] - close[i - 1])
+        tr[i] = max(hl, hc, lc)
+
+    # Simple moving average of true range
+    atr = np.full(n, np.nan)
+    for i in range(period - 1, n):
+        atr[i] = np.mean(tr[i - period + 1:i + 1])
+
+    return np.nan_to_num(atr, nan=0.01)
 
 
 def compute_triple_barrier_labels(
     prices: np.ndarray,
     predictions: np.ndarray,
     config: Optional[TripleBarrierConfig] = None,
+    high: Optional[np.ndarray] = None,
+    low: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Compute triple-barrier labels (0/1 meta-labels).
 
     For each prediction point:
-      - Compute rolling volatility as barrier width
-      - Upper barrier = entry_price * (1 + multiplier * vol)
-      - Lower barrier = entry_price * (1 - multiplier * vol)
+      - Compute barrier width from ATR (if high/low provided) or rolling vol
+      - Upper barrier = entry_price + multiplier * barrier_width
+      - Lower barrier = entry_price - multiplier * barrier_width
       - Time barrier = max_holding_period days
       - Label = 1 if price hits upper barrier first (profitable trade)
       - Label = 0 otherwise
@@ -46,6 +84,8 @@ def compute_triple_barrier_labels(
         prices: Price series, shape (n,).
         predictions: Base model predictions, shape (n,).
         config: Triple barrier configuration.
+        high: Optional high prices for ATR computation.
+        low: Optional low prices for ATR computation.
 
     Returns:
         Binary labels array, shape (n,). NaN where label cannot be computed.
@@ -56,22 +96,34 @@ def compute_triple_barrier_labels(
     n = len(prices)
     labels = np.full(n, np.nan)
 
-    # Rolling volatility
-    log_ret = np.diff(np.log(prices + 1e-10))
-    log_ret = np.concatenate([[0.0], log_ret])
-    vol = pd.Series(log_ret).rolling(config.volatility_lookback).std().values
-    vol = np.nan_to_num(vol, nan=0.01)
-    vol = np.maximum(vol, 1e-6)
+    # Compute barrier width: ATR-based or volatility-based
+    if config.use_atr and high is not None and low is not None:
+        atr = compute_atr(high, low, prices, config.atr_period)
+        barrier_width = atr
+    else:
+        # Fallback: rolling volatility * price
+        log_ret = np.diff(np.log(prices + 1e-10))
+        log_ret = np.concatenate([[0.0], log_ret])
+        vol = pd.Series(log_ret).rolling(config.volatility_lookback).std().values
+        vol = np.nan_to_num(vol, nan=0.01)
+        vol = np.maximum(vol, 1e-6)
+        barrier_width = vol * prices  # convert to price-level width
 
-    for i in range(config.volatility_lookback, n - config.max_holding_period):
+    lookback = max(config.volatility_lookback, config.atr_period) if config.use_atr else config.volatility_lookback
+
+    for i in range(lookback, n - config.max_holding_period):
         entry_price = prices[i]
         direction = np.sign(predictions[i])
         if abs(predictions[i]) < 1e-8:
             labels[i] = 0.0
             continue
 
-        upper = entry_price * (1 + config.upper_barrier_multiplier * vol[i])
-        lower = entry_price * (1 - config.lower_barrier_multiplier * vol[i])
+        if config.use_atr and high is not None and low is not None:
+            upper = entry_price + config.upper_barrier_multiplier * barrier_width[i]
+            lower = entry_price - config.lower_barrier_multiplier * barrier_width[i]
+        else:
+            upper = entry_price * (1 + config.upper_barrier_multiplier * vol[i])
+            lower = entry_price * (1 - config.lower_barrier_multiplier * vol[i])
 
         # Walk forward through holding period
         hit_upper = False
@@ -325,18 +377,28 @@ class NestedWalkForwardMetaTrainer:
             logger.warning("Insufficient valid meta-labels: %d", len(valid_indices))
             return MetaLabelModel(), {"n_valid": len(valid_indices), "accuracy": 0.0}
 
-        # Use last 30% for testing, rest for training
-        split_idx = int(len(valid_indices) * 0.7)
-        train_idx = valid_indices[:split_idx]
-        test_idx = valid_indices[split_idx:]
+        # Strict 3-way split:
+        # - Base model trains on fold_train (first 50%)
+        # - Meta-model trains on fold_val (next 30%) = base model's OOS predictions
+        # - Final evaluation on fold_test (last 20%)
+        base_end = int(len(valid_indices) * 0.50)
+        meta_end = int(len(valid_indices) * 0.80)
+
+        # Meta-model ONLY trains on data that was OOS for the base model
+        meta_train_idx = valid_indices[base_end:meta_end]
+        test_idx = valid_indices[meta_end:]
+
+        if len(meta_train_idx) < 20:
+            logger.warning("Insufficient meta-train samples: %d", len(meta_train_idx))
+            return MetaLabelModel(), {"n_valid": len(valid_indices), "accuracy": 0.0}
 
         meta_model = MetaLabelModel()
         meta_model.fit(
-            meta_feat.features[train_idx],
-            meta_labels[train_idx],
+            meta_feat.features[meta_train_idx],
+            meta_labels[meta_train_idx],
         )
 
-        # Evaluate on test set
+        # Evaluate on test set (never seen by base or meta model)
         if meta_model.is_fitted and len(test_idx) > 0:
             test_proba = meta_model.predict_proba(meta_feat.features[test_idx])
             test_pred = (test_proba > 0.5).astype(float)
@@ -346,12 +408,16 @@ class NestedWalkForwardMetaTrainer:
 
         metrics = {
             "n_valid": len(valid_indices),
-            "n_train": len(train_idx),
+            "n_base_train": base_end,
+            "n_meta_train": len(meta_train_idx),
             "n_test": len(test_idx),
             "accuracy": accuracy,
             "label_balance": float(np.mean(meta_labels[valid_indices])),
+            "base_meta_overlap": 0,  # guaranteed no overlap by construction
         }
-        logger.info("Meta-trainer: accuracy=%.3f, balance=%.3f", accuracy, metrics["label_balance"])
+        logger.info("Meta-trainer: accuracy=%.3f, balance=%.3f, meta_train=%d, test=%d",
+                     accuracy, metrics["label_balance"],
+                     len(meta_train_idx), len(test_idx))
 
         return meta_model, metrics
 

@@ -18,10 +18,13 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from abc import ABC, abstractmethod
+import logging
 
 from sklearn.linear_model import ElasticNet
 from sklearn.preprocessing import StandardScaler
 import lightgbm as lgb
+
+logger = logging.getLogger(__name__)
 
 
 class BaseModel(ABC):
@@ -772,6 +775,55 @@ class HybridMultiModalModel(BaseModel):
         self._device = "cpu"
         self._quantiles_list = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
 
+    def _pcgrad_step(
+        self, optimizer, losses, net,
+    ):
+        """PCGrad-lite: project conflicting gradients away from each other.
+
+        When multiple losses compete, this projects the gradient of each
+        task away from the conflicting component of other tasks.
+        """
+        import torch
+
+        if len(losses) < 2:
+            total = sum(losses)
+            total.backward()
+            return
+
+        grads = []
+        for loss in losses:
+            optimizer.zero_grad()
+            loss.backward(retain_graph=True)
+            grad = []
+            for p in net.parameters():
+                if p.grad is not None:
+                    grad.append(p.grad.data.clone().flatten())
+                else:
+                    grad.append(torch.zeros(p.numel(), device=p.device))
+            grads.append(torch.cat(grad))
+
+        # Project conflicting gradients
+        projected = []
+        for i, gi in enumerate(grads):
+            proj_gi = gi.clone()
+            for j, gj in enumerate(grads):
+                if i == j:
+                    continue
+                dot = torch.dot(proj_gi, gj)
+                if dot < 0:
+                    proj_gi = proj_gi - (dot / (torch.dot(gj, gj) + 1e-8)) * gj
+            projected.append(proj_gi)
+
+        # Average projected gradients and assign back
+        avg_grad = sum(projected) / len(projected)
+        optimizer.zero_grad()
+        offset = 0
+        for p in net.parameters():
+            numel = p.numel()
+            if p.grad is not None or p.requires_grad:
+                p.grad = avg_grad[offset:offset + numel].reshape(p.shape).clone()
+            offset += numel
+
     def _build_sequences(self, X, y=None):
         seq_len = self.params["sequence_length"]
         n = X.shape[0]
@@ -814,6 +866,7 @@ class HybridMultiModalModel(BaseModel):
         else:
             X_val_seq, y_val_seq = None, None
 
+        ablation_cfg = self.params.get("ablation_config")
         self.net = HybridMultiModalNet(
             n_features=self._input_size,
             n_tickers=self.params["n_tickers"],
@@ -824,7 +877,18 @@ class HybridMultiModalModel(BaseModel):
             fusion_dim=self.params["fusion_dim"],
             n_quantiles=self.params["n_quantiles"],
             dropout=self.params["dropout"],
+            ablation_config=ablation_cfg,
         ).to(self._device)
+
+        # Multi-GPU support
+        if self.params.get("multi_gpu", False):
+            try:
+                import torch as _torch
+                if _torch.cuda.device_count() > 1:
+                    self.net = nn.DataParallel(self.net)
+                    logger.info("Using DataParallel with %d GPUs", _torch.cuda.device_count())
+            except Exception:
+                pass
 
         # Pretrain VAE cross-sectionally, then freeze
         from models.vae import pretrain_vae_cross_sectional
@@ -858,8 +922,13 @@ class HybridMultiModalModel(BaseModel):
             train_ds, batch_size=self.params["batch_size"], shuffle=True,
         )
 
+        # Mixed precision training setup
+        use_amp = self.params.get("use_amp", False) and torch.cuda.is_available()
+        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
         best_val_loss = float("inf")
         patience_counter = 0
+        log_grad_interval = self.params.get("log_grad_interval", 0)
 
         for epoch in range(self.params["epochs"]):
             self.net.train()
@@ -872,18 +941,33 @@ class HybridMultiModalModel(BaseModel):
                 ticker_ids = torch.zeros(batch_size, dtype=torch.long, device=self._device)
 
                 optimizer.zero_grad()
-                out = self.net(X_b, x_static, ticker_ids)
 
-                task_loss = criterion(
-                    out["quantiles"], out["p_up"],
-                    out["quantiles"][:, 3],  # median as point estimate
-                    y_b,
-                )
-                # VAE loss is decoupled: log only, not backpropagated
-                total_loss = task_loss["total"]
-                total_loss.backward()
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    out = self.net(X_b, x_static, ticker_ids)
+                    task_loss = criterion(
+                        out["quantiles"], out["p_up"],
+                        out["quantiles"][:, 3],  # median as point estimate
+                        y_b,
+                    )
+                    total_loss = task_loss["total"]
+
+                scaler.scale(total_loss).backward()
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
+
+            # Log gradient norms periodically
+            if log_grad_interval > 0 and (epoch + 1) % log_grad_interval == 0:
+                try:
+                    from training.ablation import log_gradient_norms
+                    norms = log_gradient_norms(self.net)
+                    if norms:
+                        import logging as _logging
+                        _logging.getLogger(__name__).debug(
+                            "Epoch %d grad norms: %s", epoch + 1, norms)
+                except Exception:
+                    pass
 
             scheduler.step()
 

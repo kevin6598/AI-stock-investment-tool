@@ -59,6 +59,31 @@ class ModelMonitor:
         self._prediction_history = []  # type: List[float]
         self._actual_history = []  # type: List[float]
         self._alerts = []  # type: List[DriftAlert]
+        self._drift_detector = None  # Optional[DriftDetector]
+
+    def set_drift_detector(
+        self,
+        baseline_features: np.ndarray,
+        baseline_ic: float,
+        feature_names: Optional[List[str]] = None,
+    ) -> None:
+        """Configure the enhanced drift detector.
+
+        Args:
+            baseline_features: Training feature matrix.
+            baseline_ic: Baseline IC from training.
+            feature_names: Feature names.
+        """
+        try:
+            from training.drift import DriftDetector
+            self._drift_detector = DriftDetector(
+                baseline_features=baseline_features,
+                baseline_ic=baseline_ic,
+                feature_names=feature_names,
+                psi_threshold=self.psi_threshold,
+            )
+        except ImportError:
+            logger.debug("training.drift not available")
 
     def set_baseline(self, features: np.ndarray) -> None:
         """Store reference feature distributions for PSI computation.
@@ -139,6 +164,7 @@ class ModelMonitor:
     def check_feature_drift(
         self,
         features: np.ndarray,
+        new_ic: Optional[float] = None,
     ) -> List[DriftAlert]:
         """Check for feature distribution drift using PSI.
 
@@ -149,13 +175,36 @@ class ModelMonitor:
         PSI 0.10-0.20: moderate drift
         PSI > 0.20: significant drift
 
+        Also uses DriftDetector for richer alerts if configured.
+
         Args:
             features: current feature matrix (n_samples, n_features).
+            new_ic: optional current IC value for decay detection.
 
         Returns:
             List of drift alerts.
         """
         alerts = []
+
+        # Use enhanced DriftDetector if available
+        if self._drift_detector is not None:
+            try:
+                from training.drift import DriftAlert as DriftAlertExt
+                ext_alerts = self._drift_detector.check(features, new_ic)
+                for ea in ext_alerts:
+                    alert = DriftAlert(
+                        alert_type=ea.alert_type,
+                        severity=ea.severity,
+                        metric_name=ea.feature_name,
+                        current_value=ea.current_value,
+                        threshold=ea.threshold,
+                        message=ea.message,
+                    )
+                    alerts.append(alert)
+                    self._alerts.append(alert)
+                return alerts
+            except Exception:
+                pass  # fall through to legacy detection
 
         if not self._baseline_distributions:
             return alerts
@@ -176,10 +225,11 @@ class ModelMonitor:
                 alert = DriftAlert(
                     alert_type="feature_drift",
                     severity=severity,
-                    metric_name=f"psi_feature_{col_idx}",
+                    metric_name="psi_feature_{}".format(col_idx),
                     current_value=float(psi),
                     threshold=self.psi_threshold,
-                    message=f"Feature {col_idx}: PSI={psi:.3f} exceeds threshold {self.psi_threshold:.3f}",
+                    message="Feature {}: PSI={:.3f} exceeds threshold {:.3f}".format(
+                        col_idx, psi, self.psi_threshold),
                 )
                 alerts.append(alert)
                 self._alerts.append(alert)

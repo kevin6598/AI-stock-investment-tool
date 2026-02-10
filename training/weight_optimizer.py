@@ -808,16 +808,28 @@ class ICBasedModelEnsemble:
         rolling_window: int = 126,
         correlation_threshold: float = 0.8,
         correlation_penalty: float = 0.5,
+        ic_halflife: int = 63,
+        weight_clip_min: float = 0.05,
+        weight_clip_max: float = 0.50,
+        temperature: float = 1.0,
     ):
         """
         Args:
             rolling_window: Window for computing rolling IC.
             correlation_threshold: Correlation above which penalty is applied.
             correlation_penalty: Multiplicative penalty for correlated models.
+            ic_halflife: Half-life for exponential decay weighting of IC.
+            weight_clip_min: Minimum weight per model.
+            weight_clip_max: Maximum weight per model.
+            temperature: Softmax temperature (lower = more concentrated).
         """
         self.rolling_window = rolling_window
         self.correlation_threshold = correlation_threshold
         self.correlation_penalty = correlation_penalty
+        self.ic_halflife = ic_halflife
+        self.weight_clip_min = weight_clip_min
+        self.weight_clip_max = weight_clip_max
+        self.temperature = temperature
         self.weights = {}  # type: Dict[str, float]
 
     def fit(
@@ -845,7 +857,7 @@ class ICBasedModelEnsemble:
         n = len(realized_returns)
         window = min(self.rolling_window, n)
 
-        # Compute rolling IC per model
+        # Compute rolling IC per model with exponential decay weighting
         model_ics = {}
         for name in model_names:
             preds = model_predictions[name]
@@ -860,7 +872,21 @@ class ICBasedModelEnsemble:
                 model_ics[name] = 0.0
                 continue
 
-            ic, _ = sp_stats.spearmanr(p[mask], r[mask])
+            # Apply exponential decay: more weight to recent observations
+            if self.ic_halflife > 0:
+                decay_lambda = np.log(2) / self.ic_halflife
+                t = np.arange(window)[::-1]  # most recent = 0
+                decay_weights = np.exp(-decay_lambda * t)
+                # Weighted Spearman IC via rank correlation on decay-weighted subsample
+                # Approximate by using recent-biased subsample
+                weighted_mask = mask & (decay_weights > 0.1)
+                if weighted_mask.sum() >= 10:
+                    ic, _ = sp_stats.spearmanr(p[weighted_mask], r[weighted_mask])
+                else:
+                    ic, _ = sp_stats.spearmanr(p[mask], r[mask])
+            else:
+                ic, _ = sp_stats.spearmanr(p[mask], r[mask])
+
             model_ics[name] = max(ic, 0.0)
 
         # Compute pairwise prediction correlation
@@ -886,19 +912,47 @@ class ICBasedModelEnsemble:
                     else:
                         corr_penalties[name_j] *= self.correlation_penalty
 
-        # Compute weights: IC * penalty, then normalize
-        raw_weights = {}
+        # Compute weights: IC * penalty, then softmax normalization
+        raw_scores = {}
         for name in model_names:
-            raw_weights[name] = model_ics.get(name, 0.0) * corr_penalties[name]
+            raw_scores[name] = model_ics.get(name, 0.0) * corr_penalties[name]
 
-        total = sum(raw_weights.values())
-        if total > 0:
-            self.weights = {name: w / total for name, w in raw_weights.items()}
+        scores = np.array([raw_scores[name] for name in model_names])
+
+        # Softmax normalization with temperature
+        if np.any(scores > 0):
+            weights = self._softmax_weights(scores, self.temperature)
         else:
-            equal_w = 1.0 / len(model_names)
-            self.weights = {name: equal_w for name in model_names}
+            weights = np.ones(len(model_names)) / len(model_names)
 
+        # Weight clipping
+        if len(model_names) > 1:
+            weights = np.clip(weights, self.weight_clip_min, self.weight_clip_max)
+            # Re-normalize after clipping
+            total = weights.sum()
+            if total > 0:
+                weights = weights / total
+
+        self.weights = {name: float(w) for name, w in zip(model_names, weights)}
         return self.weights
+
+    @staticmethod
+    def _softmax_weights(scores: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+        """Softmax normalization with temperature control.
+
+        Args:
+            scores: Raw IC scores per model.
+            temperature: Controls concentration. Lower = more concentrated.
+
+        Returns:
+            Normalized weight array summing to 1.
+        """
+        temp = max(temperature, 1e-8)
+        exp_w = np.exp(scores / temp)
+        total = exp_w.sum()
+        if total > 0:
+            return exp_w / total
+        return np.ones_like(scores) / len(scores)
 
     def combine(
         self,

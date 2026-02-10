@@ -47,6 +47,40 @@ def get_historical_data(ticker: str, period: str = "1y", interval: str = "1d") -
         return pd.DataFrame()
 
 
+def get_historical_data_range(
+    ticker: str,
+    start: str,
+    end: str,
+    interval: str = "1d",
+) -> pd.DataFrame:
+    """Fetch OHLCV data for a specific date range.
+
+    Supports 15+ year data windows via yfinance start/end params.
+
+    Args:
+        ticker: Stock ticker symbol.
+        start: Start date (YYYY-MM-DD).
+        end: End date (YYYY-MM-DD).
+        interval: Data interval (default "1d").
+
+    Returns:
+        DataFrame with OHLCV data, or empty DataFrame on failure.
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        df = stock.history(start=start, end=end, interval=interval)
+        if df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.index = pd.to_datetime(df.index)
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def get_current_price(ticker: str) -> Optional[float]:
     """Get current price for portfolio valuation."""
     try:
