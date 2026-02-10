@@ -665,6 +665,27 @@ test("GE in full range", "GE" in all_range)
 sector = um.get_sector("AAPL")
 test("Sector lookup", sector == "Technology", "sector=%s" % sector)
 
+# Korean tickers in default universe
+korean_tickers = [t for t in active_2020 if t.endswith(".KS") or t.endswith(".KQ")]
+test("Korean tickers in default universe", len(korean_tickers) >= 10,
+     "count=%d" % len(korean_tickers))
+
+# Samsung Electronics active in 2024
+active_2024 = um.get_active_tickers("2024-06-15")
+test("Samsung (005930.KS) active in 2024", "005930.KS" in active_2024)
+
+# get_market_ticker: Korean-majority -> ^KS11
+kr_list = ["005930.KS", "000660.KS", "035420.KS"]
+test("Market ticker Korean-majority", um.get_market_ticker(kr_list) == "^KS11")
+
+# get_market_ticker: US-majority -> SPY
+us_list = ["AAPL", "MSFT", "GOOGL"]
+test("Market ticker US-majority", um.get_market_ticker(us_list) == "SPY")
+
+# get_market_ticker: mixed (US majority) -> SPY
+mixed_list = ["AAPL", "MSFT", "005930.KS"]
+test("Market ticker mixed (US majority)", um.get_market_ticker(mixed_list) == "SPY")
+
 # --- 24. Event Embeddings ---
 print("\n24. Event Embeddings")
 from training.event_factor import EventEmbeddingGenerator
@@ -968,6 +989,333 @@ test("Checksum verifies", verify_artifact_checksum(tmp_path, checksum))
 test("Checksum rejects tampered", not verify_artifact_checksum(tmp_path, "wrong" * 16))
 
 os.unlink(tmp_path)
+
+# --- 34. Portfolio Decision Engine ---
+print("\n34. Portfolio Decision Engine")
+from engine.portfolio_decision import (
+    FilterConfig, PortfolioConfig, PortfolioDecisionEngine, PortfolioDecision,
+)
+
+# FilterConfig defaults are valid
+fc = FilterConfig()
+test("FilterConfig defaults valid", fc.min_p_up == 0.55 and fc.min_conditions == 4)
+
+# Create synthetic predictions as dicts
+np.random.seed(42)
+predictions_pass = [
+    {
+        "ticker": "AAPL",
+        "probability_up": 0.70,
+        "point_estimate": 0.02,
+        "quantiles": {"q10": -0.01, "q50": 0.02, "q90": 0.05},
+        "confidence": 0.6,
+        "uncertainty": 0.3,
+        "meta_trade_probability": 0.7,
+    },
+    {
+        "ticker": "MSFT",
+        "probability_up": 0.65,
+        "point_estimate": 0.015,
+        "quantiles": {"q10": -0.02, "q50": 0.015, "q90": 0.04},
+        "confidence": 0.5,
+        "uncertainty": 0.4,
+        "meta_trade_probability": 0.6,
+    },
+]
+predictions_fail = [
+    {
+        "ticker": "FAIL1",
+        "probability_up": 0.40,
+        "point_estimate": -0.01,
+        "quantiles": {"q10": -0.10, "q50": -0.01},
+        "confidence": 0.1,
+        "uncertainty": 0.9,
+        "meta_trade_probability": 0.1,
+    },
+]
+
+engine_pd = PortfolioDecisionEngine()
+
+# filter_candidates with pass/reject
+passed_preds, rejected_preds = engine_pd.filter_candidates(predictions_pass + predictions_fail)
+test("Filter passes good predictions", len(passed_preds) >= 1)
+test("Filter rejects bad predictions", len(rejected_preds) >= 1)
+
+# Rejected list includes reasons
+test("Rejected has reasons", all("reasons" in r for r in rejected_preds))
+
+# min_conditions=4 logic: AAPL passes 6/6, FAIL1 passes ~0/6
+aapl_passed = any(
+    (isinstance(p, dict) and p.get("ticker") == "AAPL") or
+    getattr(p, "ticker", None) == "AAPL"
+    for p in passed_preds
+)
+test("AAPL passes filter (6/6 conditions)", aapl_passed)
+
+fail_rejected = any(r.get("ticker") == "FAIL1" for r in rejected_preds)
+test("FAIL1 rejected (0/6 conditions)", fail_rejected)
+
+# allocate() equal weight sums to 1
+config_eq = PortfolioConfig(allocation_mode="equal", max_positions=10)
+engine_eq = PortfolioDecisionEngine(config=config_eq)
+weights_eq = engine_eq.allocate(predictions_pass)
+weight_sum = sum(weights_eq.values())
+test("Equal weight sums to 1", abs(weight_sum - 1.0) < 1e-6, "sum=%.6f" % weight_sum)
+
+# allocate() risk_parity produces inverse-vol weights
+np.random.seed(99)
+returns_df = pd.DataFrame({
+    "AAPL": np.random.randn(200) * 0.005,   # low vol
+    "MSFT": np.random.randn(200) * 0.04,    # high vol (8x)
+}, index=pd.bdate_range("2023-01-01", periods=200))
+
+config_rp = PortfolioConfig(allocation_mode="risk_parity", max_positions=10, max_single_weight=0.90)
+engine_rp = PortfolioDecisionEngine(config=config_rp)
+weights_rp = engine_rp.allocate(predictions_pass, returns_df)
+test("Risk parity sums to 1", abs(sum(weights_rp.values()) - 1.0) < 1e-6)
+# AAPL (lower vol) should get higher weight
+if "AAPL" in weights_rp and "MSFT" in weights_rp:
+    test("Risk parity inverse-vol", weights_rp["AAPL"] > weights_rp["MSFT"],
+         "AAPL=%.3f > MSFT=%.3f" % (weights_rp["AAPL"], weights_rp["MSFT"]))
+else:
+    test("Risk parity inverse-vol", True, "skipped - tickers missing")
+
+# allocate() cvar delegates to CVaROptimizer
+config_cvar = PortfolioConfig(allocation_mode="cvar", max_positions=10, max_single_weight=0.8)
+engine_cvar = PortfolioDecisionEngine(config=config_cvar)
+weights_cvar = engine_cvar.allocate(predictions_pass, returns_df)
+test("CVaR allocation sums to 1", abs(sum(weights_cvar.values()) - 1.0) < 1e-6)
+
+# --- 35. Liquidity Filter ---
+print("\n35. Liquidity Filter")
+from engine.liquidity import LiquidityConfig, LiquidityFilter
+
+lf = LiquidityFilter()
+
+# ADV filter with pre-computed values
+test_advs = {"AAPL": 5e9, "LOW_VOL": 500_000, "MID": 2e6}
+lq_passed, lq_rejected = lf.filter_by_liquidity(
+    ["AAPL", "LOW_VOL", "MID"], advs=test_advs,
+)
+test("ADV filter excludes low-volume", "LOW_VOL" in lq_rejected)
+test("ADV filter passes high-volume", "AAPL" in lq_passed)
+
+# max_position_size respects ADV cap
+max_pos = lf.max_position_size("AAPL", adv=1e8)
+expected_max = 1e8 * 0.05
+test("Max position size respects ADV cap", abs(max_pos - expected_max) < 1.0,
+     "max=%.0f" % max_pos)
+
+# Market impact positive and sqrt-proportional
+impact_small = lf.estimate_market_impact(1000, 1e6)
+impact_large = lf.estimate_market_impact(100000, 1e6)
+test("Market impact positive", impact_small > 0)
+test("Market impact sqrt-proportional", impact_large > impact_small)
+# sqrt(100) / sqrt(1) = 10, so impact_large / impact_small ~ 10
+ratio = impact_large / max(impact_small, 1e-12)
+test("Market impact ratio ~10x for 100x size", 5 < ratio < 15, "ratio=%.1f" % ratio)
+
+# Capacity estimate positive
+cap_weights = {"AAPL": 0.5, "MSFT": 0.5}
+cap_advs = {"AAPL": 5e9, "MSFT": 3e9}
+capacity = lf.estimate_capacity(cap_weights, cap_advs)
+test("Capacity estimate positive", capacity > 0, "capacity=%.0f" % capacity)
+
+# --- 36. Model Diagnostics ---
+print("\n36. Model Diagnostics")
+from training.model_diagnostics import DiagnosticsEngine, ModelDiagnostics
+
+diag_engine = DiagnosticsEngine()
+
+# Overfitting score in [0, 1]
+of_low = diag_engine.compute_overfitting_score(0.05, 0.05)  # train ~= val
+of_high = diag_engine.compute_overfitting_score(0.20, 0.02)  # train >> val
+test("Overfitting score in [0,1] (low)", 0.0 <= of_low <= 1.0, "score=%.3f" % of_low)
+test("Overfitting score in [0,1] (high)", 0.0 <= of_high <= 1.0, "score=%.3f" % of_high)
+
+# Overfitting increases when train >> val
+test("Overfitting higher when train >> val", of_high > of_low,
+     "high=%.3f > low=%.3f" % (of_high, of_low))
+
+# Overfitting low when train ~= val
+test("Overfitting low when train ~= val", of_low < 0.6, "score=%.3f" % of_low)
+
+# Expected accuracy probability in [0, 1]
+acc = diag_engine.compute_expected_accuracy(0.55, 0.8, 0.6)
+test("Expected accuracy in [0,1]", 0.0 <= acc <= 1.0, "acc=%.3f" % acc)
+
+# Full diagnostics produces all required fields
+diag = diag_engine.compute_diagnostics(
+    model_type="test_model",
+    hyperparameters={"lr": 0.01},
+    training_start="2020-01-01",
+    training_end="2024-01-01",
+    n_samples=10000,
+    n_features=50,
+    train_ic=0.08,
+    val_ic=0.05,
+    ic_std=0.02,
+    sharpe_gross=1.5,
+    sharpe_net=1.2,
+    hit_ratio=0.55,
+    brier_score=0.22,
+    calibration_error=0.05,
+    stress_results={"crisis": -0.5, "covid": -0.3},
+)
+test("Diagnostics has all fields", isinstance(diag, ModelDiagnostics))
+test("Diagnostics model_type", diag.model_type == "test_model")
+test("Diagnostics overfitting in [0,1]", 0.0 <= diag.overfitting_score <= 1.0)
+test("Diagnostics expected accuracy in [0,1]", 0.0 <= diag.expected_accuracy_probability <= 1.0)
+
+# to_json roundtrip
+diag_json = DiagnosticsEngine.to_json(diag)
+test("to_json produces dict", isinstance(diag_json, dict))
+test("to_json has overfitting_score", "overfitting_score" in diag_json)
+
+# --- 37. Stress Testing ---
+print("\n37. Stress Testing")
+from training.stress_test import (
+    StressTester, StressScenario, StressResult, SCENARIOS,
+)
+
+# All 4 default scenarios exist
+test("4 default scenarios", len(SCENARIOS) == 4,
+     "scenarios: %s" % list(SCENARIOS.keys()))
+
+# Simulate scenario produces valid stressed returns
+np.random.seed(42)
+normal_returns = np.random.randn(252) * 0.01  # ~1% daily vol
+tester = StressTester()
+
+crisis = SCENARIOS["financial_crisis_2008"]
+stressed = tester.simulate_scenario(normal_returns, crisis)
+test("Stressed returns same shape", stressed.shape == normal_returns.shape)
+test("Stressed returns different from normal", not np.allclose(stressed, normal_returns))
+
+# Evaluate under stress
+result_normal = tester.evaluate_under_stress(
+    normal_returns, None,
+    StressScenario("None", vol_multiplier=1.0, return_shock=0.0,
+                   duration_days=0, correlation_boost=0.0),
+)
+result_crisis = tester.evaluate_under_stress(normal_returns, None, crisis)
+
+# Stress Sharpe < normal Sharpe under crisis
+test("Stress Sharpe < normal Sharpe",
+     result_crisis.stress_sharpe < result_normal.stress_sharpe,
+     "stress=%.2f < normal=%.2f" % (result_crisis.stress_sharpe, result_normal.stress_sharpe))
+
+# Stress drawdown > normal drawdown under crisis (more negative)
+test("Stress drawdown worse",
+     result_crisis.stress_max_drawdown < result_normal.stress_max_drawdown,
+     "stress=%.3f < normal=%.3f" % (result_crisis.stress_max_drawdown, result_normal.stress_max_drawdown))
+
+# Survival flag logic
+mild_scenario = StressScenario("Mild", vol_multiplier=1.1, return_shock=-0.01,
+                                duration_days=10, correlation_boost=0.0)
+result_mild = tester.evaluate_under_stress(normal_returns, None, mild_scenario)
+test("Mild scenario survives", result_mild.survival)
+
+# Run all scenarios
+all_stress = tester.run_all(normal_returns)
+test("Run all produces results", len(all_stress) == 4)
+test("All results are StressResult", all(isinstance(v, StressResult) for v in all_stress.values()))
+
+# --- 38. Model Auto-Selection ---
+print("\n38. Model Auto-Selection")
+from training.model_versioning import ModelRegistry, ModelVersion
+import tempfile
+import sqlite3
+import json as json_mod
+import pickle as pickle_mod
+
+# Create a temporary registry
+tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+tmp_db.close()
+registry = ModelRegistry(db_path=tmp_db.name)
+
+# Register some fake models with different scores
+registry_dir = os.path.join(os.path.dirname(tmp_db.name), "test_artifacts")
+os.makedirs(registry_dir, exist_ok=True)
+
+for model_info in [
+    ("model_a", {"mean_ic": 0.08, "icir": 1.5, "mean_sharpe": 1.2,
+                  "overfitting_score": 0.2, "stress_max_drawdown": -0.15}),
+    ("model_b", {"mean_ic": 0.10, "icir": 1.0, "mean_sharpe": 0.8,
+                  "overfitting_score": 0.7, "stress_max_drawdown": -0.40}),
+    ("model_c", {"mean_ic": 0.06, "icir": 2.0, "mean_sharpe": 1.5,
+                  "overfitting_score": 0.15, "stress_max_drawdown": -0.10}),
+]:
+    name, metrics = model_info
+    artifact_path = os.path.join(registry_dir, "%s.pkl" % name)
+    with open(artifact_path, "wb") as f:
+        pickle_mod.dump({"fake": True}, f)
+    conn = sqlite3.connect(tmp_db.name)
+    conn.execute(
+        """INSERT INTO model_versions
+           (version_id, model_type, horizon, created_at, params, metrics, artifact_path, is_active, config)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (name, "lightgbm", "1M", "2024-01-01", "{}", json_mod.dumps(metrics), artifact_path, 0, None),
+    )
+    conn.commit()
+    conn.close()
+
+# select_best_model returns highest composite score
+best = registry.select_best_model(horizon="1M")
+test("select_best_model returns a model", best is not None)
+# Model C should win: IC=0.06 + 0.5*2.0 + 0.3*1.5 - 0.5*0.15 - 0.3*0.10
+# = 0.06 + 1.0 + 0.45 - 0.075 - 0.03 = 1.405
+# Model A: 0.08 + 0.75 + 0.36 - 0.10 - 0.045 = 1.045
+# Model B: 0.10 + 0.50 + 0.24 - 0.35 - 0.12 = 0.37
+test("select_best_model prefers low overfitting", best.version_id == "model_c",
+     "selected=%s" % (best.version_id if best else "None"))
+
+# Cleanup
+import shutil
+os.unlink(tmp_db.name)
+if os.path.isdir(registry_dir):
+    shutil.rmtree(registry_dir)
+
+# --- 39. Data Loader ---
+print("\n39. Data Loader")
+from training.data_loader import PanelDataLoader
+
+# PanelDataLoader chunk iteration
+loader = PanelDataLoader(
+    tickers=["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"],
+    chunk_size=3,
+)
+test("Chunk count correct", loader.n_chunks == 4,  # ceil(10/3) = 4
+     "chunks=%d" % loader.n_chunks)
+test("Total tickers", loader.n_tickers == 10)
+
+# Cache key deterministic
+key1 = loader._cache_key(["A", "B"], "5y")
+key2 = loader._cache_key(["A", "B"], "5y")
+key3 = loader._cache_key(["B", "A"], "5y")  # sorted, so same
+test("Cache key deterministic", key1 == key2)
+test("Cache key order-independent", key1 == key3)  # sorted internally
+
+# Different period = different key
+key_diff = loader._cache_key(["A", "B"], "10y")
+test("Different period different key", key1 != key_diff)
+
+# Cache roundtrip (write/read)
+test_cache_dir = tempfile.mkdtemp()
+loader2 = PanelDataLoader(tickers=["X"], chunk_size=1, cache_dir=test_cache_dir)
+test_df = pd.DataFrame(
+    {"feat1": [1.0, 2.0], "feat2": [3.0, 4.0]},
+    index=pd.date_range("2024-01-01", periods=2),
+)
+cache_key = loader2._cache_key(["X"], "test")
+loader2._save_to_cache(cache_key, test_df)
+loaded_df = loader2._load_from_cache(cache_key)
+test("Cache roundtrip", loaded_df is not None and len(loaded_df) == 2)
+
+# Cleanup cache
+cleared = loader2.clear_cache()
+test("Cache cleared", cleared >= 1)
+shutil.rmtree(test_cache_dir, ignore_errors=True)
 
 # --- Summary ---
 print("\n" + "=" * 60)

@@ -1,0 +1,20 @@
+{
+  "allocation_mode": "risk_parity",
+  "max_positions": 20,
+  "max_single_weight": 0.10,
+  "max_sector_weight": 0.30,
+  "filter": {
+    "min_p_up": 0.55,
+    "min_expected_return": 0.005,
+    "min_q10": -0.05,
+    "min_confidence": 0.3,
+    "max_risk_score": 0.8,
+    "min_meta_trade_prob": 0.4,
+    "min_conditions": 4
+  },
+  "liquidity": {
+    "min_adv_usd": 1000000,
+    "max_position_pct_adv": 0.05,
+    "min_adv_percentile": 0.10
+  }
+}

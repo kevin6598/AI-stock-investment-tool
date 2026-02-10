@@ -4,13 +4,71 @@ import yfinance as yf
 import pandas as pd
 
 
+# Simple KRW/USD exchange rate constant (fallback when yfinance FX unavailable)
+_KRW_USD_RATE = 1350.0  # approximate
+
+
+def detect_exchange(ticker: str) -> str:
+    """Infer exchange from ticker suffix.
+
+    Args:
+        ticker: Stock ticker symbol.
+
+    Returns:
+        Exchange name: "KOSPI", "KOSDAQ", "NYSE", or "NASDAQ".
+    """
+    upper = ticker.upper()
+    if upper.endswith(".KS"):
+        return "KOSPI"
+    if upper.endswith(".KQ"):
+        return "KOSDAQ"
+    # For US stocks, try yfinance info; fallback to NASDAQ
+    try:
+        stock = yf.Ticker(ticker)
+        exchange = stock.info.get("exchange", "")
+        if "NYS" in exchange.upper() or "NYSE" in exchange.upper():
+            return "NYSE"
+    except Exception:
+        pass
+    return "NASDAQ"
+
+
+def normalize_currency(
+    price: float,
+    currency: str,
+    target: str = "USD",
+) -> float:
+    """Convert price to target currency using simple FX rates.
+
+    Args:
+        price: Price in source currency.
+        currency: Source currency code (e.g., "KRW", "USD").
+        target: Target currency code.
+
+    Returns:
+        Price in target currency.
+    """
+    if currency == target:
+        return price
+    if currency == "KRW" and target == "USD":
+        return price / _KRW_USD_RATE
+    if currency == "USD" and target == "KRW":
+        return price * _KRW_USD_RATE
+    # Unknown pair: return as-is
+    return price
+
+
 def get_stock_info(ticker: str) -> Optional[dict]:
-    """Fetch company info: name, sector, price, market cap, P/E, 52-week range."""
+    """Fetch company info: name, sector, price, market cap, P/E, 52-week range, exchange."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         if not info or info.get("trailingPegRatio") is None and info.get("shortName") is None:
             return None
+
+        exchange = detect_exchange(ticker)
+        currency = info.get("currency", "USD")
+
         return {
             "ticker": ticker.upper(),
             "name": info.get("shortName", "N/A"),
@@ -23,6 +81,8 @@ def get_stock_info(ticker: str) -> Optional[dict]:
             "volume": info.get("volume", 0),
             "avg_volume": info.get("averageVolume", 0),
             "dividend_yield": info.get("dividendYield", None),
+            "exchange": exchange,
+            "currency": currency,
         }
     except Exception:
         return None

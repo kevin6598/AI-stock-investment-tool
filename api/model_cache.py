@@ -134,27 +134,49 @@ class ModelCache:
             return self._try_load_from_registry()
 
     def _try_load_from_registry(self) -> bool:
-        """Fallback: try loading from model registry."""
+        """Fallback: try loading from model registry using robust auto-selection."""
         try:
             from training.model_versioning import ModelRegistry
             registry = ModelRegistry()
-            version = registry.get_active_model("hybrid_multimodal", "1M")
+
+            # Use composite-score-based selection first
+            version = registry.select_best_model(horizon="1M", criteria="robust")
+
+            # Fall back to active model if select_best_model returns None
             if version is None:
-                # Try other model types
+                version = registry.get_active_model("hybrid_multimodal", "1M")
+            if version is None:
                 for model_type in ["lightgbm", "elastic_net", "transformer", "lstm_attention"]:
                     version = registry.get_active_model(model_type, "1M")
                     if version is not None:
                         break
 
             if version is not None:
+                # Checksum validation if available
+                artifact_path = version.artifact_path
+                expected_hash = version.metrics.get("artifact_checksum")
+                if expected_hash and os.path.exists(artifact_path):
+                    try:
+                        from api.auth import verify_artifact_checksum
+                        if not verify_artifact_checksum(artifact_path, expected_hash):
+                            logger.warning("Checksum mismatch for %s, loading anyway",
+                                          version.version_id)
+                    except ImportError:
+                        pass
+
                 self.model = registry.load_model(version.version_id)
-                self.metadata = {"version": version.version_id}
+                self.metadata = {
+                    "version": version.version_id,
+                    "model_type": version.model_type,
+                    "metrics": version.metrics,
+                }
                 self._loaded = True
                 self._load_time = datetime.now()
-                logger.info(f"Loaded model from registry: {version.version_id}")
+                logger.info("Loaded model from registry: %s (type=%s)",
+                           version.version_id, version.model_type)
                 return True
         except Exception as e:
-            logger.debug(f"Registry fallback failed: {e}")
+            logger.debug("Registry fallback failed: %s", e)
 
         logger.info("No pre-trained model available; API will train on-demand")
         return False

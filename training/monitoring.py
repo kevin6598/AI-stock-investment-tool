@@ -407,6 +407,192 @@ class RetrainingScheduler:
         return False
 
 
+class RetrainingMonitor:
+    """Advanced retraining monitor using diagnostics and drift detection.
+
+    Evaluates multiple degradation signals and decides whether to retrain.
+    After retraining, compares composite scores to decide activation.
+
+    Usage:
+        monitor = RetrainingMonitor()
+        decision = monitor.check_retraining(
+            current_ic=0.03, overfitting_score=0.4,
+            psi_values=[0.1, 0.3], normal_sharpe=1.2, stress_sharpe=0.5,
+        )
+        if decision.should_retrain:
+            monitor.trigger_retrain(tickers, horizons, model_types)
+    """
+
+    def __init__(
+        self,
+        ic_threshold: float = 0.02,
+        psi_threshold: float = 0.20,
+        overfitting_threshold: float = 0.6,
+        stress_degradation: float = 0.3,
+    ):
+        """
+        Args:
+            ic_threshold: Minimum acceptable rolling IC.
+            psi_threshold: Maximum acceptable PSI before retraining.
+            overfitting_threshold: Maximum acceptable overfitting score.
+            stress_degradation: Maximum stress Sharpe degradation ratio.
+        """
+        self.ic_threshold = ic_threshold
+        self.psi_threshold = psi_threshold
+        self.overfitting_threshold = overfitting_threshold
+        self.stress_degradation = stress_degradation
+
+    def check_retraining(
+        self,
+        current_ic: float = 0.0,
+        overfitting_score: float = 0.0,
+        psi_values: Optional[List[float]] = None,
+        normal_sharpe: float = 0.0,
+        stress_sharpe: float = 0.0,
+        drift_alerts: Optional[List] = None,
+    ) -> 'RetrainingDecision':
+        """Evaluate whether retraining is needed.
+
+        Args:
+            current_ic: Current rolling IC value.
+            overfitting_score: Current overfitting score from diagnostics.
+            psi_values: List of PSI values per feature.
+            normal_sharpe: Sharpe ratio under normal conditions.
+            stress_sharpe: Sharpe ratio under stress conditions.
+            drift_alerts: List of DriftAlert objects.
+
+        Returns:
+            RetrainingDecision with reasons and metrics.
+        """
+        reasons = []
+        degradation = {}
+
+        # Condition 1: Low IC
+        if current_ic < self.ic_threshold:
+            reasons.append("IC=%.4f below threshold %.4f" % (current_ic, self.ic_threshold))
+            degradation["ic_gap"] = self.ic_threshold - current_ic
+
+        # Condition 2: High PSI
+        if psi_values:
+            max_psi = max(psi_values)
+            if max_psi > self.psi_threshold:
+                reasons.append("Max PSI=%.3f exceeds %.3f" % (max_psi, self.psi_threshold))
+                degradation["max_psi"] = max_psi
+
+        # Condition 3: High overfitting score
+        if overfitting_score > self.overfitting_threshold:
+            reasons.append("Overfitting=%.3f exceeds %.3f" % (
+                overfitting_score, self.overfitting_threshold))
+            degradation["overfitting"] = overfitting_score
+
+        # Condition 4: Stress degradation
+        if normal_sharpe > 0 and stress_sharpe < normal_sharpe * (1 - self.stress_degradation):
+            ratio = 1 - stress_sharpe / max(normal_sharpe, 1e-8)
+            reasons.append("Stress Sharpe degraded %.1f%%" % (ratio * 100))
+            degradation["stress_degradation"] = ratio
+
+        # Condition 5: High-severity drift alerts
+        if drift_alerts:
+            high_alerts = [a for a in drift_alerts
+                          if getattr(a, "severity", "") == "high"]
+            if high_alerts:
+                reasons.append("%d high-severity drift alerts" % len(high_alerts))
+                degradation["high_drift_alerts"] = float(len(high_alerts))
+
+        # Compute a rough composite score for current model health
+        composite = current_ic * 10 - overfitting_score - degradation.get("max_psi", 0.0)
+
+        should = len(reasons) > 0
+        if should:
+            logger.warning("Retraining recommended: %s", "; ".join(reasons))
+        else:
+            logger.info("Model health OK (IC=%.4f, overfit=%.3f)", current_ic, overfitting_score)
+
+        return RetrainingDecision(
+            should_retrain=should,
+            reasons=reasons,
+            current_composite_score=float(composite),
+            degradation_summary=degradation,
+        )
+
+    def trigger_retrain(
+        self,
+        tickers: List[str],
+        horizons: List[str],
+        model_types: List[str],
+    ) -> Optional[str]:
+        """Trigger a retraining run.
+
+        Args:
+            tickers: Tickers to retrain on.
+            horizons: Horizons to train.
+            model_types: Model types to train.
+
+        Returns:
+            Version ID of the new best model, or None if failed.
+        """
+        try:
+            from training.forecast import ForecastPipeline
+
+            horizon_map = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252}
+            horizon_dict = {h: horizon_map[h] for h in horizons if h in horizon_map}
+
+            pipeline = ForecastPipeline(
+                tickers=tickers,
+                horizons=horizon_dict,
+                model_types=model_types,
+            )
+            pipeline.run()
+            logger.info("Retraining completed successfully")
+            return "retrained"
+        except Exception as e:
+            logger.error("Retraining failed: %s", e)
+            return None
+
+    def update_registry(
+        self,
+        new_version_id: str,
+        old_version_id: Optional[str] = None,
+        new_composite: float = 0.0,
+        old_composite: float = 0.0,
+    ) -> bool:
+        """Decide whether to activate new model or keep old one.
+
+        Args:
+            new_version_id: Version ID of newly trained model.
+            old_version_id: Version ID of current active model.
+            new_composite: Composite score of new model.
+            old_composite: Composite score of old model.
+
+        Returns:
+            True if new model was activated.
+        """
+        if new_composite > old_composite:
+            try:
+                from training.model_versioning import ModelRegistry
+                registry = ModelRegistry()
+                registry.activate_version(new_version_id)
+                logger.info("Activated new model %s (score=%.4f > %.4f)",
+                           new_version_id, new_composite, old_composite)
+                return True
+            except Exception as e:
+                logger.error("Failed to activate new model: %s", e)
+                return False
+        else:
+            logger.info("Keeping old model %s (old=%.4f >= new=%.4f)",
+                       old_version_id, old_composite, new_composite)
+            return False
+
+
+@dataclass
+class RetrainingDecision:
+    """Decision about whether to retrain."""
+    should_retrain: bool
+    reasons: List[str]
+    current_composite_score: float
+    degradation_summary: Dict[str, float]
+
+
 class WeeklyRetrainingTrigger:
     """Checks whether a weekly retraining cycle should execute.
 

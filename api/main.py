@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from api.model_cache import ModelCache
 from api.feature_pipeline import ServingFeaturePipeline
-from api.routes import predict, indicators, sentiment, health
+from api.routes import predict, indicators, sentiment, health, diagnostics
 from api.auth import APIKeyMiddleware, RateLimiter
 
 logging.basicConfig(
@@ -94,6 +94,7 @@ app.include_router(predict.router)
 app.include_router(indicators.router)
 app.include_router(sentiment.router)
 app.include_router(health.router)
+app.include_router(diagnostics.router)
 
 
 @app.get("/")

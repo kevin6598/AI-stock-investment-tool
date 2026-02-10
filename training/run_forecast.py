@@ -4,6 +4,8 @@ CLI Entry Point for Stock Forecasting Pipeline
 Usage:
     python -m training.run_forecast --tickers AAPL MSFT GOOGL --horizons 1M 3M 6M
     python -m training.run_forecast --tickers AAPL --models elastic_net lightgbm
+    python -m training.run_forecast --universe --horizons 1M 3M
+    python -m training.run_forecast --tickers 005930.KS 000660.KS --horizons 1M
 """
 
 import argparse
@@ -11,6 +13,7 @@ import logging
 import json
 import sys
 import os
+from datetime import datetime
 
 # Ensure project root is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,13 +24,23 @@ from training.model_selection import WalkForwardConfig
 
 def main():
     parser = argparse.ArgumentParser(description="AI Stock Forecasting Pipeline")
-    parser.add_argument(
-        "--tickers", nargs="+", required=True,
+    ticker_group = parser.add_mutually_exclusive_group(required=True)
+    ticker_group.add_argument(
+        "--tickers", nargs="+",
         help="Stock tickers to forecast (e.g., AAPL MSFT GOOGL)",
     )
+    ticker_group.add_argument(
+        "--universe", action="store_true", default=False,
+        help="Use default universe (~100 tickers) from UniverseManager",
+    )
+    ticker_group.add_argument(
+        "--extended-universe", action="store_true", default=False,
+        dest="extended_universe",
+        help="Use extended universe (~300 S&P 500 + Korean tickers)",
+    )
     parser.add_argument(
-        "--market", default="SPY",
-        help="Market index ticker (default: SPY)",
+        "--market", default="auto",
+        help="Market index ticker (default: auto-detect from tickers)",
     )
     parser.add_argument(
         "--horizons", nargs="+", default=["1M", "3M", "6M"],
@@ -40,7 +53,7 @@ def main():
     )
     parser.add_argument(
         "--period", default="5y",
-        help="Historical data period (default: 5y)",
+        help="Historical data period (default: 5y). Supports: 5y, 10y, 15y, 20y",
     )
     parser.add_argument(
         "--output", default=None,
@@ -56,6 +69,31 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Resolve tickers from --universe, --extended-universe, or --tickers
+    if args.universe:
+        from data.universe_manager import UniverseManager
+        um = UniverseManager()
+        tickers = um.get_active_tickers(datetime.now().strftime("%Y-%m-%d"))
+        print("Loaded %d tickers from default universe" % len(tickers))
+    elif args.extended_universe:
+        from data.universe_manager import UniverseManager, TickerMembership
+        members = UniverseManager.load_extended_universe()
+        today = datetime.now().strftime("%Y-%m-%d")
+        tickers = sorted([
+            m.ticker for m in members
+            if m.start_date <= today and (m.end_date is None or m.end_date >= today)
+        ])
+        print("Loaded %d tickers from extended universe" % len(tickers))
+    else:
+        tickers = args.tickers
+
+    # Auto-detect market index
+    if args.market == "auto":
+        korean = sum(1 for t in tickers if t.upper().endswith((".KS", ".KQ")))
+        market = "^KS11" if korean > len(tickers) / 2 else "SPY"
+    else:
+        market = args.market
 
     # Setup logging
     log_level = logging.INFO if args.verbose else logging.WARNING
@@ -78,8 +116,11 @@ def main():
             sys.exit(1)
 
     # Walk-forward config adapted to data period
+    # Adjust train_start based on lookback period
+    period_years = {"5y": 5, "10y": 10, "15y": 15, "20y": 20}.get(args.period, 5)
+    train_start_year = max(2026 - period_years, 2005)
     wf_config = WalkForwardConfig(
-        train_start="2016-01-01",
+        train_start="%d-01-01" % train_start_year,
         test_end="2026-02-08",
         train_min_months=24,
         val_months=6,
@@ -89,17 +130,18 @@ def main():
         expanding=True,
     )
 
-    print(f"\nStock Forecasting Pipeline")
-    print(f"  Tickers: {args.tickers}")
-    print(f"  Horizons: {list(horizons.keys())}")
-    print(f"  Models: {args.models}")
-    print(f"  Data period: {args.period}")
+    print("\nStock Forecasting Pipeline")
+    print("  Tickers: %s" % tickers)
+    print("  Market index: %s" % market)
+    print("  Horizons: %s" % list(horizons.keys()))
+    print("  Models: %s" % args.models)
+    print("  Data period: %s" % args.period)
     print()
 
     # Run pipeline
     pipeline = ForecastPipeline(
-        tickers=args.tickers,
-        market_ticker=args.market,
+        tickers=tickers,
+        market_ticker=market,
         horizons=horizons,
         model_types=args.models,
         data_period=args.period,

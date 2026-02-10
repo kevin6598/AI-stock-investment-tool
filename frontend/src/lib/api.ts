@@ -118,4 +118,8 @@ export const api = {
   getHealth(): Promise<HealthResponse> {
     return fetchJSON("/api/v1/health");
   },
+
+  getDiagnostics(): Promise<any> {
+    return fetchJSON("/api/v1/model/diagnostics");
+  },
 };
