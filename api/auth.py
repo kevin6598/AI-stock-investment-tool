@@ -46,7 +46,9 @@ try:
             # Skip excluded paths
             path = request.url.path
             for excluded in self.exclude_paths:
-                if path.startswith(excluded):
+                if excluded == "/" and path == "/":
+                    return await call_next(request)
+                elif excluded != "/" and path.startswith(excluded):
                     return await call_next(request)
 
             # Skip if no API keys configured (open access)
