@@ -33,6 +33,7 @@ from training.model_selection import (
 )
 from training.weight_optimizer import (
     DynamicWeightEngine, COMPONENT_NAMES, RegimeClassifier,
+    ICBasedModelEnsemble,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,7 +191,10 @@ class ForecastPipeline:
     def _get_feature_cols(self) -> List[str]:
         """Get all feature columns (excluding targets and metadata)."""
         return [c for c in self.panel.columns
-                if not c.startswith("fwd_return_") and c != "_close"]
+                if not c.startswith("fwd_return_")
+                and not c.startswith("residual_return_")
+                and not c.startswith("ranked_target_")
+                and c != "_close"]
 
     def train_and_evaluate(self) -> Dict:
         """Train all models across all horizons with walk-forward validation.
@@ -211,16 +215,19 @@ class ForecastPipeline:
         all_evaluations = {}
 
         for horizon_name, horizon_days in self.horizons.items():
-            target_col = f"fwd_return_{horizon_days}d"
-            if target_col not in self.panel.columns:
-                logger.warning(f"Target {target_col} not found, skipping horizon {horizon_name}")
+            raw_target_col = "fwd_return_{0}d".format(horizon_days)
+            ranked_target_col = "ranked_target_{0}d".format(horizon_days)
+            # Use ranked target for training if available, else raw
+            train_target = ranked_target_col if ranked_target_col in self.panel.columns else raw_target_col
+            if raw_target_col not in self.panel.columns:
+                logger.warning("Target {0} not found, skipping horizon {1}".format(raw_target_col, horizon_name))
                 continue
 
-            logger.info(f"\n--- Horizon: {horizon_name} ({horizon_days}d) ---")
+            logger.info("\n--- Horizon: {0} ({1}d) ---".format(horizon_name, horizon_days))
             horizon_evals = {}
 
             for model_type in self.model_types:
-                logger.info(f"  Model: {model_type}")
+                logger.info("  Model: {0}".format(model_type))
                 fold_results = []
 
                 for fold in folds:
@@ -233,12 +240,12 @@ class ForecastPipeline:
                         model = create_model(model_type)
                         result = evaluate_model_on_fold(
                             model, train_df, val_df, test_df,
-                            target_col, feature_cols,
+                            train_target, feature_cols,
                         )
                         result.fold_idx = fold.fold_idx
                         fold_results.append(result)
                     except Exception as e:
-                        logger.warning(f"    Fold {fold.fold_idx} failed: {e}")
+                        logger.warning("    Fold {0} failed: {1}".format(fold.fold_idx, e))
                         continue
 
                 evaluation = ModelEvaluation(
@@ -307,8 +314,8 @@ class ForecastPipeline:
     def generate_forecasts(self) -> Dict:
         """Generate final forecasts for each ticker and horizon.
 
-        Uses the best model from evaluation to produce point estimates
-        and distributional forecasts.
+        Trains all model types, uses IC-based ensemble for combining,
+        then produces point estimates and distributional forecasts.
         """
         if "evaluations" not in self.results:
             raise RuntimeError("Call train_and_evaluate() first.")
@@ -317,7 +324,11 @@ class ForecastPipeline:
         forecasts = {}
 
         for horizon_name, horizon_days in self.horizons.items():
-            target_col = f"fwd_return_{horizon_days}d"
+            target_col = "ranked_target_{0}d".format(horizon_days)
+            raw_target_col = "fwd_return_{0}d".format(horizon_days)
+            # Fall back to raw target if ranked not available
+            if target_col not in self.panel.columns:
+                target_col = raw_target_col
             if target_col not in self.panel.columns:
                 continue
 
@@ -325,36 +336,55 @@ class ForecastPipeline:
             if not evals:
                 continue
 
-            # Select best model by Calmar ratio
-            best_model_name = max(evals, key=lambda m: evals[m].mean_calmar)
-            logger.info(f"  {horizon_name}: best model = {best_model_name}")
-
-            # Retrain best model on all available data
-            # Use most recent portion as "current" for prediction
             X_all = self.panel[feature_cols].values.astype(np.float32)
             y_all = self.panel[target_col].values.astype(np.float32)
             np.nan_to_num(X_all, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
             np.nan_to_num(y_all, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
-            # Train on all but last horizon worth of data
             split_idx = max(len(X_all) - horizon_days * 2, int(len(X_all) * 0.8))
             X_train = X_all[:split_idx]
             y_train = y_all[:split_idx]
             X_recent = X_all[split_idx:]
 
-            model = create_model(best_model_name)
-            val_split = int(len(X_train) * 0.85)
-            model.fit(
-                X_train[:val_split], y_train[:val_split],
-                X_train[val_split:], y_train[val_split:],
-                feature_names=feature_cols,
-            )
+            # Train all model types and collect OOS predictions for IC ensemble
+            model_predictions = {}
+            model_objects = {}
+            for model_type in self.model_types:
+                try:
+                    model = create_model(model_type)
+                    val_split = int(len(X_train) * 0.85)
+                    model.fit(
+                        X_train[:val_split], y_train[:val_split],
+                        X_train[val_split:], y_train[val_split:],
+                        feature_names=feature_cols,
+                    )
+                    preds = model.predict(X_recent)
+                    model_predictions[model_type] = preds
+                    model_objects[model_type] = model
+                except Exception as e:
+                    logger.warning("  Failed to train {0}: {1}".format(model_type, e))
+                    continue
 
-            # Generate predictions
-            point_preds = model.predict(X_recent)
-            quantile_preds = model.predict_quantiles(X_recent)
+            if not model_predictions:
+                continue
 
-            # Per-ticker forecasts (use last row per ticker)
+            # IC-based ensemble
+            y_recent = y_all[split_idx:]
+            ensemble = ICBasedModelEnsemble()
+            ensemble_weights = ensemble.fit(model_predictions, y_recent)
+            combined_preds = ensemble.combine(model_predictions)
+
+            logger.info("  {0} ensemble weights: {1}".format(
+                horizon_name,
+                {k: round(v, 3) for k, v in ensemble_weights.items()},
+            ))
+
+            # Get quantiles from best model
+            best_model_name = max(ensemble_weights, key=lambda k: ensemble_weights[k])
+            best_model = model_objects[best_model_name]
+            quantile_preds = best_model.predict_quantiles(X_recent)
+
+            # Per-ticker forecasts
             recent_panel = self.panel.iloc[split_idx:]
             horizon_forecasts = {}
 
@@ -366,15 +396,14 @@ class ForecastPipeline:
                 ticker_idx = np.where(ticker_mask)[0]
                 last_idx = ticker_idx[-1] if len(ticker_idx) > 0 else 0
 
-                point = float(point_preds[last_idx]) if last_idx < len(point_preds) else 0.0
+                point = float(combined_preds[last_idx]) if last_idx < len(combined_preds) else 0.0
                 distribution = {}
                 for q, vals in quantile_preds.items():
                     if last_idx < len(vals):
-                        distribution[f"p{int(q*100)}"] = round(float(vals[last_idx]), 5)
+                        distribution["p{0}".format(int(q * 100))] = round(float(vals[last_idx]), 5)
 
                 direction_prob = 0.5
                 if point > 0:
-                    # Estimate P(return > 0) from quantiles
                     p10 = distribution.get("p10", -0.05)
                     p50 = distribution.get("p50", point)
                     if p10 < 0 < p50:
@@ -388,10 +417,12 @@ class ForecastPipeline:
                     "point_estimate": round(point, 5),
                     "distribution": distribution,
                     "direction_probability": round(min(max(direction_prob, 0.05), 0.95), 3),
+                    "model_weights": {k: round(v, 4) for k, v in ensemble_weights.items()},
                 }
 
             forecasts[horizon_name] = {
                 "best_model": best_model_name,
+                "ensemble_weights": ensemble_weights,
                 "ticker_forecasts": horizon_forecasts,
             }
 
@@ -475,7 +506,7 @@ class ForecastPipeline:
             return
 
         print("\n" + "=" * 70)
-        print("  STOCK FORECASTING PIPELINE — RESULTS")
+        print("  STOCK FORECASTING PIPELINE - RESULTS")
         print("=" * 70)
 
         print(f"\nEvaluation Date: {self.results.get('evaluation_date', 'N/A')}")

@@ -420,11 +420,13 @@ class EventClassifier:
         if best_event is not None:
             info = _EVENT_CATEGORIES[best_event]
             confidence = min(best_match_count / 3.0, 1.0)
+            magnitude = float(info["magnitude"])
             return {
                 "event_type": best_event,
                 "event_direction": float(info["direction"]),
-                "event_magnitude": float(info["magnitude"]),
+                "event_magnitude": magnitude,
                 "event_confidence": confidence,
+                "surprise_magnitude": magnitude * confidence,
             }
 
         return {
@@ -432,6 +434,7 @@ class EventClassifier:
             "event_direction": 0.0,
             "event_magnitude": 0.0,
             "event_confidence": 0.0,
+            "surprise_magnitude": 0.0,
         }
 
     def classify_batch(self, texts: List[str]) -> List[Dict[str, float]]:
@@ -525,6 +528,94 @@ class KeywordEmbedder:
         return [f"kw_{cat}" for cat in self._categories]
 
 
+class ConfidenceGatedEventEncoder:
+    """Wraps EventClassifier, MacroImpactScorer, and KeywordEmbedder
+    with confidence-based gating.
+
+    Produces 10 gated numeric features from a single text:
+      - event_direction, event_magnitude, surprise_magnitude (from EventClassifier)
+      - macro_impact (from MacroImpactScorer)
+      - kw_growth, kw_risk, kw_value, kw_quality, kw_momentum (from KeywordEmbedder)
+      - event_confidence (from EventClassifier)
+
+    Sparsity rule: if confidence < threshold, all event features are zeroed.
+    """
+
+    def __init__(self, confidence_threshold: float = 0.2):
+        self.confidence_threshold = confidence_threshold
+        self.event_classifier = EventClassifier()
+        self.macro_scorer = MacroImpactScorer()
+        self.keyword_embedder = KeywordEmbedder()
+
+    @property
+    def feature_names(self) -> List[str]:
+        return [
+            "event_direction", "event_magnitude", "surprise_magnitude",
+            "event_confidence", "macro_impact",
+            "kw_growth", "kw_risk", "kw_value", "kw_quality", "kw_momentum",
+        ]
+
+    def encode(self, text: str) -> Dict[str, float]:
+        """Encode a single text into gated numeric features.
+
+        Args:
+            text: Input headline/article.
+
+        Returns:
+            Dict of 10 feature name -> value.
+        """
+        event = self.event_classifier.classify(text)
+        macro = self.macro_scorer.score(text)
+        kw = self.keyword_embedder.embed(text)
+
+        confidence = event.get("event_confidence", 0.0)
+
+        # Gating: zero out if confidence below threshold
+        if confidence < self.confidence_threshold:
+            return {name: 0.0 for name in self.feature_names}
+
+        return {
+            "event_direction": event.get("event_direction", 0.0),
+            "event_magnitude": event.get("event_magnitude", 0.0),
+            "surprise_magnitude": event.get("surprise_magnitude", 0.0),
+            "event_confidence": confidence,
+            "macro_impact": macro.get("macro_impact", 0.0),
+            "kw_growth": kw.get("kw_growth", 0.0),
+            "kw_risk": kw.get("kw_risk", 0.0),
+            "kw_value": kw.get("kw_value", 0.0),
+            "kw_quality": kw.get("kw_quality", 0.0),
+            "kw_momentum": kw.get("kw_momentum", 0.0),
+        }
+
+    def encode_batch(self, texts: List[str]) -> Dict[str, float]:
+        """Encode multiple texts with confidence-weighted aggregation.
+
+        Args:
+            texts: List of headlines.
+
+        Returns:
+            Dict of aggregated feature name -> value.
+        """
+        if not texts:
+            return {name: 0.0 for name in self.feature_names}
+
+        all_features = [self.encode(t) for t in texts]
+
+        # Confidence-weighted aggregation
+        confidences = [f.get("event_confidence", 0.0) for f in all_features]
+        total_conf = sum(confidences)
+
+        if total_conf < 1e-8:
+            return {name: 0.0 for name in self.feature_names}
+
+        result = {}
+        for name in self.feature_names:
+            vals = [f[name] * c for f, c in zip(all_features, confidences)]
+            result[name] = sum(vals) / total_conf
+
+        return result
+
+
 def get_extended_sentiment_features(
     ticker: str,
     model: Optional[SentimentModel] = None,
@@ -541,6 +632,8 @@ def get_extended_sentiment_features(
         **base_features,
         "event_direction": 0.0,
         "event_magnitude": 0.0,
+        "event_confidence": 0.0,
+        "surprise_magnitude": 0.0,
         "macro_impact": 0.0,
         "kw_growth": 0.0,
         "kw_risk": 0.0,
@@ -559,32 +652,11 @@ def get_extended_sentiment_features(
         if not titles:
             return extended
 
-        # Event classification
-        ec = EventClassifier()
-        events = ec.classify_batch(titles)
-        if events:
-            # Average across headlines, weighted by confidence
-            dirs = [e["event_direction"] * e["event_confidence"] for e in events]
-            mags = [e["event_magnitude"] * e["event_confidence"] for e in events]
-            total_conf = sum(e["event_confidence"] for e in events)
-            if total_conf > 0:
-                extended["event_direction"] = sum(dirs) / total_conf
-                extended["event_magnitude"] = sum(mags) / total_conf
-
-        # Macro impact
-        ms = MacroImpactScorer()
-        macro_scores = ms.score_batch(titles)
-        impacts = [m["macro_impact"] * m["macro_confidence"] for m in macro_scores]
-        total_conf = sum(m["macro_confidence"] for m in macro_scores)
-        if total_conf > 0:
-            extended["macro_impact"] = sum(impacts) / total_conf
-
-        # Keyword embedding
-        ke = KeywordEmbedder()
-        kw_scores = ke.embed_batch(titles)
-        for cat in ke.feature_names:
-            vals = [kw[cat] for kw in kw_scores]
-            extended[cat] = float(np.mean(vals)) if vals else 0.0
+        # Use ConfidenceGatedEventEncoder for all event/keyword features
+        encoder = ConfidenceGatedEventEncoder()
+        gated = encoder.encode_batch(titles)
+        for key, val in gated.items():
+            extended[key] = val
 
     except Exception as e:
         logger.debug(f"Extended sentiment features unavailable for {ticker}: {e}")

@@ -45,12 +45,16 @@ class RetailPrediction(BaseModel):
     point_estimate: float
     quantiles: QuantileForecast
     risk_score: float = Field(ge=0, le=1)
-    hold_signal: float = Field(ge=0, le=1)
+    hold_signal: float = Field(default=0.0, ge=0, le=1, description="Deprecated, kept for backward compatibility")
     regime: str
     is_zero_shot: bool = Field(
         default=False,
         description="True if ticker was not in training set",
     )
+    meta_trade_probability: Optional[float] = Field(default=None, ge=0, le=1)
+    uncertainty: Optional[float] = Field(default=None, ge=0)
+    scaled_alpha: Optional[float] = Field(default=None)
+    model_weights: Optional[Dict[str, float]] = Field(default=None)
 
 
 class PredictResponse(BaseModel):

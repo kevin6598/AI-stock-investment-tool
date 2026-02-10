@@ -94,11 +94,39 @@ def _predict_single(ticker: str, horizon: str) -> RetailPrediction:
         downside = abs(q_vals.get(0.05, -0.1))
         risk_score = min(1.0, downside * 10)
 
-        # Hold signal
-        hold_signal = 1.0 if direction == "HOLD" else 0.0
-
         # Regime (from weight optimizer)
         regime = _get_regime(ticker)
+
+        # Uncertainty estimation via MC dropout or quantile spread fallback
+        uncertainty_val = None
+        meta_prob = None
+        scaled_alpha_val = None
+        try:
+            if _model_cache is not None and _model_cache.is_loaded and _model_cache.model is not None:
+                model = _model_cache.model
+                if hasattr(model, 'predict_with_uncertainty'):
+                    _, unc_var = model.predict_with_uncertainty(
+                        X_seq.reshape(X_seq.shape[0], -1) if 'X_seq' in dir() else X_static.reshape(X_static.shape[0], -1)
+                    )
+                    uncertainty_val = float(np.mean(unc_var))
+                else:
+                    # Fallback: use quantile spread
+                    uncertainty_val = spread / 2.56 if spread > 0 else 0.0
+
+                # Meta-labeling probability
+                if _model_cache.meta_model is not None:
+                    meta_features = _feature_pipeline.compute_meta_features(
+                        point_est, uncertainty_val, confidence,
+                    )
+                    meta_prob = float(_model_cache.meta_model.predict_proba(meta_features)[0])
+
+                # Scaled alpha
+                if uncertainty_val is not None:
+                    base_alpha = point_est
+                    mp = meta_prob if meta_prob is not None else 1.0
+                    scaled_alpha_val = float(base_alpha * mp / (1.0 + uncertainty_val))
+        except Exception as e:
+            logger.debug("Uncertainty/meta computation skipped: %s", e)
 
         return RetailPrediction(
             ticker=ticker.upper(),
@@ -117,9 +145,12 @@ def _predict_single(ticker: str, horizon: str) -> RetailPrediction:
                 q95=round(q_vals.get(0.95, 0.1), 6),
             ),
             risk_score=round(risk_score, 4),
-            hold_signal=round(hold_signal, 4),
+            hold_signal=0.0,
             regime=regime,
             is_zero_shot=is_zero_shot,
+            meta_trade_probability=round(meta_prob, 4) if meta_prob is not None else None,
+            uncertainty=round(uncertainty_val, 6) if uncertainty_val is not None else None,
+            scaled_alpha=round(scaled_alpha_val, 6) if scaled_alpha_val is not None else None,
         )
 
     except Exception as e:

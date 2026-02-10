@@ -22,6 +22,10 @@ export interface RetailPrediction {
   hold_signal: number;
   regime: string;
   is_zero_shot: boolean;
+  meta_trade_probability?: number;
+  uncertainty?: number;
+  scaled_alpha?: number;
+  model_weights?: Record<string, number>;
 }
 
 export interface PredictResponse {

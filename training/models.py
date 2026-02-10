@@ -51,6 +51,25 @@ class BaseModel(ABC):
     def get_feature_importance(self) -> Dict[str, float]:
         pass
 
+    def predict_with_uncertainty(
+        self, X: np.ndarray, n_mc_passes: int = 30,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Predict with uncertainty estimation.
+
+        Neural models use MC dropout; classical models use quantile spread.
+
+        Args:
+            X: Input features.
+            n_mc_passes: Number of MC dropout passes (neural models only).
+
+        Returns:
+            (predictions, variance) arrays.
+        """
+        from training.uncertainty import compute_uncertainty_fallback
+        preds = self.predict(X)
+        uncertainty = compute_uncertainty_fallback(self, X)
+        return preds, uncertainty ** 2  # variance = uncertainty^2
+
 
 # ---------------------------------------------------------------------------
 # 1. Elastic Net
@@ -337,8 +356,11 @@ class LSTMAttentionModel(BaseModel):
         import torch
         import torch.nn as nn
         from torch.utils.data import TensorDataset, DataLoader
+        from training.reproducibility import set_all_seeds
 
-        self.feature_names = feature_names or [f"f{i}" for i in range(X_train.shape[1])]
+        set_all_seeds(42)
+
+        self.feature_names = feature_names or ["f{}".format(i) for i in range(X_train.shape[1])]
         self._input_size = X_train.shape[1]
 
         # Scale features
@@ -620,8 +642,11 @@ class TransformerModel(BaseModel):
             y_val: Optional[np.ndarray] = None,
             feature_names: Optional[List[str]] = None):
         from models.transformer_ts import TransformerGaussianModel
+        from training.reproducibility import set_all_seeds
 
-        self.feature_names = feature_names or [f"f{i}" for i in range(X_train.shape[1])]
+        set_all_seeds(42)
+
+        self.feature_names = feature_names or ["f{}".format(i) for i in range(X_train.shape[1])]
 
         # Map BaseModel params to TransformerGaussianModel config
         config = {
@@ -773,8 +798,11 @@ class HybridMultiModalModel(BaseModel):
         import torch.nn as nn
         from torch.utils.data import TensorDataset, DataLoader
         from models.hybrid_model import HybridMultiModalNet
+        from training.reproducibility import set_all_seeds
 
-        self.feature_names = feature_names or [f"f{i}" for i in range(X_train.shape[1])]
+        set_all_seeds(42)
+
+        self.feature_names = feature_names or ["f{}".format(i) for i in range(X_train.shape[1])]
         self._input_size = X_train.shape[1]
 
         X_train_scaled = self.scaler.fit_transform(X_train)
@@ -798,13 +826,23 @@ class HybridMultiModalModel(BaseModel):
             dropout=self.params["dropout"],
         ).to(self._device)
 
+        # Pretrain VAE cross-sectionally, then freeze
+        from models.vae import pretrain_vae_cross_sectional
+        pretrain_vae_cross_sectional(
+            self.net.vae,
+            X_train_scaled,
+            epochs=10,
+            lr=1e-3,
+            device=self._device,
+        )
+        for param in self.net.vae.parameters():
+            param.requires_grad = False
+
         from models.losses import MultiTaskLoss
-        from models.vae import VAELoss
         criterion = MultiTaskLoss(quantiles=self._quantiles_list)
-        vae_criterion = VAELoss(beta_max=0.5, warmup_steps=500)
 
         optimizer = torch.optim.Adam(
-            self.net.parameters(),
+            filter(lambda p: p.requires_grad, self.net.parameters()),
             lr=self.params["learning_rate"],
             weight_decay=1e-5,
         )
@@ -841,11 +879,8 @@ class HybridMultiModalModel(BaseModel):
                     out["quantiles"][:, 3],  # median as point estimate
                     y_b,
                 )
-                vae_loss = vae_criterion(
-                    out["vae_reconstruction"], x_static,
-                    out["vae_mu"], out["vae_log_var"],
-                )
-                total_loss = task_loss["total"] + 0.1 * vae_loss["total"]
+                # VAE loss is decoupled: log only, not backpropagated
+                total_loss = task_loss["total"]
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
                 optimizer.step()
@@ -878,6 +913,7 @@ class HybridMultiModalModel(BaseModel):
         if hasattr(self, "_best_state"):
             self.net.load_state_dict(self._best_state)
 
+        self.net.eval()
         self.is_fitted = True
 
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -959,6 +995,29 @@ class HybridMultiModalModel(BaseModel):
             if isinstance(val, torch.Tensor):
                 result[key] = val.cpu().numpy()
         return result
+
+    def predict_with_uncertainty(
+        self, X: np.ndarray, n_mc_passes: int = 30,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """MC dropout uncertainty for the hybrid model."""
+        import torch
+        from training.uncertainty import mc_dropout_predict
+
+        X_scaled = self.scaler.transform(X)
+        X_seq, _ = self._build_sequences(X_scaled)
+
+        if self.net is not None:
+            mean_pred, variance = mc_dropout_predict(
+                self.net, X_seq, n_forward_passes=n_mc_passes, device=self._device,
+            )
+            # Pad front
+            pad_len = X.shape[0] - len(mean_pred)
+            if pad_len > 0:
+                mean_pred = np.concatenate([np.full(pad_len, np.nan), mean_pred])
+                variance = np.concatenate([np.full(pad_len, 0.01), variance])
+            return mean_pred, variance
+
+        return super().predict_with_uncertainty(X, n_mc_passes)
 
     def get_feature_importance(self) -> Dict[str, float]:
         if not self.feature_names:

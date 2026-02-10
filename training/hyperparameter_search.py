@@ -81,12 +81,54 @@ def transformer_search_space(trial: optuna.Trial) -> Dict:
     }
 
 
+def hybrid_multimodal_search_space(trial: optuna.Trial) -> Dict:
+    return {
+        "hidden_dim": trial.suggest_categorical("hidden_dim", [64, 128, 256]),
+        "fusion_dim": trial.suggest_categorical("fusion_dim", [64, 128, 256]),
+        "vae_latent_dim": trial.suggest_categorical("vae_latent_dim", [8, 16, 32]),
+        "dropout": trial.suggest_float("dropout", 0.05, 0.4),
+        "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
+        "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128]),
+        "sequence_length": trial.suggest_categorical("sequence_length", [30, 60]),
+        "epochs": 50,
+        "patience": 10,
+    }
+
+
 SEARCH_SPACES = {
     "elastic_net": elastic_net_search_space,
     "lightgbm": lightgbm_search_space,
     "lstm_attention": lstm_attention_search_space,
     "transformer": transformer_search_space,
+    "hybrid_multimodal": hybrid_multimodal_search_space,
 }
+
+
+# ---------------------------------------------------------------------------
+# IC Composite Score
+# ---------------------------------------------------------------------------
+
+def _compute_ic_composite(ics: List[float]) -> float:
+    """Compute composite IC score: ic_mean + 0.5 * ICIR - 0.3 * ic_std.
+
+    This rewards both high mean IC and stability (ICIR), while penalizing
+    high variance in IC across folds.
+
+    Args:
+        ics: List of per-fold IC values.
+
+    Returns:
+        Composite IC score.
+    """
+    if not ics:
+        return -1.0
+    ic_mean = float(np.mean(ics))
+    ic_std = float(np.std(ics))
+    if ic_std < 1e-8:
+        ic_ir = 0.0
+    else:
+        ic_ir = ic_mean / ic_std
+    return ic_mean + 0.5 * ic_ir - 0.3 * ic_std
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +182,7 @@ def _inner_objective(
     if not ics:
         return -1.0  # worst possible
 
-    return float(np.mean(ics))
+    return _compute_ic_composite(ics)
 
 
 # ---------------------------------------------------------------------------
@@ -360,5 +402,6 @@ def quick_search(
     return {
         "best_params": study.best_params,
         "best_ic": study.best_value,
+        "best_ic_composite": study.best_value,
         "n_trials": n_trials,
     }

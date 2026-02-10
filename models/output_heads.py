@@ -7,13 +7,11 @@ Dual output heads for the hybrid multi-modal model:
    - P(up): probability of positive return
    - Confidence: model's self-assessed confidence
    - Quantiles: distributional forecast (7 quantiles)
-   - Hold signal: should the investor hold?
-   - Risk score: normalized 0-1 risk assessment
+   - Uncertainty: model uncertainty estimate in [0, 1]
 
 2. AuxiliaryFactorHead - Secondary outputs for model training:
    - Volatility forecast
    - Regime logits (bull/bear/crisis)
-   - Factor returns (market, size, value, momentum)
 """
 
 from typing import Dict, List, Optional
@@ -74,16 +72,8 @@ class RetailDirectionalHead(nn.Module):
             nn.Linear(hidden, n_quantiles),
         )
 
-        # Hold signal head
-        self.hold_head = nn.Sequential(
-            nn.Linear(hidden, hidden // 4),
-            nn.GELU(),
-            nn.Linear(hidden // 4, 1),
-            nn.Sigmoid(),
-        )
-
-        # Risk score head
-        self.risk_head = nn.Sequential(
+        # Uncertainty head (renamed from risk_head)
+        self.uncertainty_head = nn.Sequential(
             nn.Linear(hidden, hidden // 4),
             nn.GELU(),
             nn.Linear(hidden // 4, 1),
@@ -96,8 +86,7 @@ class RetailDirectionalHead(nn.Module):
             "p_up": self.direction_head(h).squeeze(-1),
             "confidence": self.confidence_head(h).squeeze(-1),
             "quantiles": self.quantile_head(h),
-            "hold_signal": self.hold_head(h).squeeze(-1),
-            "risk_score": self.risk_head(h).squeeze(-1),
+            "uncertainty": self.uncertainty_head(h).squeeze(-1),
         }
 
 
@@ -110,14 +99,12 @@ class AuxiliaryFactorHead(nn.Module):
     Outputs:
         vol_forecast: predicted future volatility
         regime_logits: (batch, 3) logits for [bull, bear, crisis]
-        factor_returns: (batch, 4) predicted factor returns [mkt, size, value, mom]
     """
 
     def __init__(
         self,
         input_dim: int,
         n_regimes: int = 3,
-        n_factors: int = 4,
         dropout: float = 0.2,
     ):
         super().__init__()
@@ -140,17 +127,8 @@ class AuxiliaryFactorHead(nn.Module):
             nn.Linear(hidden, n_regimes),
         )
 
-        # Factor return prediction
-        self.factor_head = nn.Sequential(
-            nn.Linear(input_dim, hidden),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden, n_factors),
-        )
-
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         return {
             "vol_forecast": self.vol_head(x).squeeze(-1),
             "regime_logits": self.regime_head(x),
-            "factor_returns": self.factor_head(x),
         }

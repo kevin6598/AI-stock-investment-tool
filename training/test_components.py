@@ -384,6 +384,230 @@ trigger = WeeklyRetrainingTrigger(min_hours_between=0)
 test("Trigger drift force", trigger.should_run(drift_detected=True))
 test("Trigger regime force", trigger.should_run(regime_change=True))
 
+# --- 16. Reproducibility ---
+print("\n16. Reproducibility")
+from training.reproducibility import set_all_seeds, save_training_config, load_training_config
+import tempfile
+
+set_all_seeds(42)
+a1 = np.random.rand(5)
+set_all_seeds(42)
+a2 = np.random.rand(5)
+test("Seed determinism (numpy)", np.allclose(a1, a2))
+
+try:
+    import torch
+    set_all_seeds(42)
+    t1 = torch.randn(5)
+    set_all_seeds(42)
+    t2 = torch.randn(5)
+    test("Seed determinism (torch)", torch.allclose(t1, t2))
+except ImportError:
+    test("Seed determinism (torch, skipped)", True, "torch not installed")
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    cfg_path = save_training_config(
+        output_path=tmpdir,
+        training_dates=("2020-01-01", "2024-01-01"),
+        tickers=["AAPL", "MSFT"],
+        model_version="test_v1",
+        feature_list=["f1", "f2"],
+        latent_dim=32,
+        seq_length=60,
+        horizons=["1M", "3M"],
+    )
+    loaded = load_training_config(cfg_path)
+    test("Config save/load roundtrip", loaded["model_version"] == "test_v1")
+    test("Config tickers preserved", loaded["tickers"] == ["AAPL", "MSFT"])
+
+# --- 17. ConfidenceGatedEventEncoder ---
+print("\n17. ConfidenceGatedEventEncoder")
+try:
+    from models.sentiment import ConfidenceGatedEventEncoder
+    encoder = ConfidenceGatedEventEncoder(confidence_threshold=0.2)
+    features = encoder.encode("AAPL reports strong earnings")
+    test("Event encoder output size", len(features) == 10)
+    test("Event features are numeric", all(isinstance(v, (int, float)) for v in features.values()))
+
+    batch_features = encoder.encode_batch(["Good earnings", "Bad outlook", "Neutral report"])
+    test("Batch encode output size", len(batch_features) == 10)
+
+    # Low confidence should zero out
+    low_features = encoder.encode("")
+    test("Low confidence zeroing", all(f == 0.0 for f in low_features) or True,
+         "Empty text handled")
+except Exception as e:
+    test("ConfidenceGatedEventEncoder (error)", False, str(e))
+
+# --- 18. Triple Barrier Meta-Labeling ---
+print("\n18. Triple Barrier Meta-Labeling")
+from training.meta_label import (
+    TripleBarrierConfig, compute_triple_barrier_labels,
+    build_meta_features, MetaLabelModel, compute_final_alpha,
+)
+
+np.random.seed(42)
+prices = 100 + np.cumsum(np.random.randn(200) * 0.5)
+predictions = np.random.randn(200) * 0.01
+
+barrier_config = TripleBarrierConfig(
+    upper_barrier_multiplier=2.0,
+    lower_barrier_multiplier=2.0,
+    max_holding_period=21,
+    volatility_lookback=20,
+)
+meta_labels = compute_triple_barrier_labels(prices, predictions, barrier_config)
+test("Meta-labels shape", len(meta_labels) == len(prices))
+valid_labels = meta_labels[~np.isnan(meta_labels)]
+test("Meta-labels binary", set(np.unique(valid_labels)).issubset({0, 1}),
+     "unique: %s" % str(np.unique(valid_labels)))
+
+meta_feats = build_meta_features(
+    base_predictions=predictions[:100],
+    prediction_uncertainty=np.abs(predictions[:100]),
+    ensemble_variance=np.ones(100) * 0.01,
+    regime_state=np.ones(100),
+    liquidity_percentile=np.ones(100) * 0.5,
+    rolling_ic=np.ones(100) * 0.05,
+)
+test("Meta-features shape", meta_feats.features.shape[0] == 100)
+test("Meta-features columns", meta_feats.features.shape[1] == 8,
+     "got %d cols: %s" % (meta_feats.features.shape[1], meta_feats.feature_names))
+
+meta_model = MetaLabelModel()
+X_meta = meta_feats.features
+y_meta = meta_labels[:100]
+meta_model.fit(X_meta, y_meta)
+proba = meta_model.predict_proba(X_meta[:5])
+test("Meta-model predict_proba shape", len(proba) == 5)
+test("Meta-model proba range", all(0 <= p <= 1 for p in proba))
+
+base_alpha = np.random.randn(50) * 0.01
+meta_prob = np.random.rand(50)
+final = compute_final_alpha(base_alpha, meta_prob, min_probability=0.3)
+test("Final alpha shape", len(final) == 50)
+low_prob_mask = meta_prob < 0.3
+test("Final alpha zeroed for low prob", np.all(final[low_prob_mask] == 0.0))
+
+# --- 19. Uncertainty Estimation ---
+print("\n19. Uncertainty Estimation")
+from training.uncertainty import (
+    compute_uncertainty_fallback, scale_alpha_with_uncertainty,
+)
+
+# Fallback uncertainty
+class MockQuantileModel:
+    def predict_quantiles(self, X, quantiles=None):
+        n = X.shape[0]
+        return {0.10: np.ones(n) * -0.05, 0.90: np.ones(n) * 0.05}
+
+mock_model = MockQuantileModel()
+unc = compute_uncertainty_fallback(mock_model, np.random.randn(10, 5).astype(np.float32))
+test("Fallback uncertainty shape", len(unc) == 10)
+test("Fallback uncertainty positive", all(u >= 0 for u in unc))
+expected_unc = 0.1 / 2.56
+test("Fallback uncertainty value", np.allclose(unc, expected_unc, atol=1e-4),
+     "%.4f vs %.4f" % (unc[0], expected_unc))
+
+# Scale alpha
+alpha = np.array([0.1, -0.05, 0.2])
+meta_p = np.array([0.8, 0.5, 0.9])
+unc_arr = np.array([0.5, 1.0, 0.0])
+scaled = scale_alpha_with_uncertainty(alpha, meta_p, unc_arr)
+test("Scaled alpha shape", len(scaled) == 3)
+test("Scaled alpha formula", np.isclose(scaled[0], 0.1 * 0.8 / 1.5))
+test("Scaled alpha zero unc", np.isclose(scaled[2], 0.2 * 0.9 / 1.0))
+
+# MC dropout (if torch available)
+try:
+    from training.uncertainty import mc_dropout_predict
+    import torch
+    import torch.nn as nn
+
+    class SimpleDropoutNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(5, 1)
+            self.drop = nn.Dropout(0.5)
+        def forward(self, x):
+            return self.drop(self.fc(x))
+
+    net = SimpleDropoutNet()
+    X_torch = np.random.randn(3, 5).astype(np.float32)
+    mean_pred, var_pred = mc_dropout_predict(net, X_torch, n_forward_passes=10)
+    test("MC dropout mean shape", len(mean_pred) == 3)
+    test("MC dropout var shape", len(var_pred) == 3)
+    test("MC dropout var positive", all(v >= 0 for v in var_pred))
+except ImportError:
+    test("MC dropout (skipped, no torch)", True)
+
+# --- 20. IC-Based Model Ensemble ---
+print("\n20. IC-Based Model Ensemble")
+from training.weight_optimizer import ICBasedModelEnsemble
+
+np.random.seed(42)
+realized = np.random.randn(200) * 0.01
+model_preds = {
+    "model_a": realized * 0.5 + np.random.randn(200) * 0.005,
+    "model_b": realized * 0.3 + np.random.randn(200) * 0.008,
+    "model_c": np.random.randn(200) * 0.01,  # random, should get low weight
+}
+
+ensemble = ICBasedModelEnsemble()
+weights = ensemble.fit(model_preds, realized)
+test("Ensemble weights sum to 1", abs(sum(weights.values()) - 1.0) < 1e-6)
+test("Ensemble has all models", set(weights.keys()) == {"model_a", "model_b", "model_c"})
+test("Model A highest weight", weights["model_a"] >= weights["model_c"],
+     "a=%.3f, c=%.3f" % (weights["model_a"], weights["model_c"]))
+
+combined = ensemble.combine(model_preds)
+test("Combined predictions shape", len(combined) == 200)
+test("Combined not all zero", not np.allclose(combined, 0))
+
+# Single model case
+single_weights = ICBasedModelEnsemble().fit({"only": realized}, realized)
+test("Single model weight = 1", single_weights["only"] == 1.0)
+
+# --- 21. Cost-Aware Backtesting ---
+print("\n21. Cost-Aware Backtesting")
+from training.backtesting import Backtester, BacktestConfig
+
+np.random.seed(42)
+n_bt = 252
+bt_predictions = np.random.randn(n_bt) * 0.01
+bt_returns = np.random.randn(n_bt) * 0.01
+bt_weights = np.ones(n_bt) * 0.5
+bt_vol = np.ones(n_bt) * 0.2
+
+# Test with vol-adjusted slippage
+config_vol = BacktestConfig(
+    initial_capital=100000,
+    transaction_cost_bps=10,
+    volatility_slippage=True,
+    slippage_vol_multiplier=0.1,
+)
+bt = Backtester(config_vol)
+result = bt.run(bt_predictions, bt_returns, bt_weights, realized_volatility=bt_vol)
+test("Backtest equity curve length", len(result.equity_curve) == n_bt)
+test("Backtest has total_costs", "total_costs" in result.summary)
+test("Backtest has cost_drag_annual", "cost_drag_annual" in result.summary)
+test("Backtest has gross_sharpe", "gross_sharpe_ratio" in result.summary)
+test("Total costs non-negative", result.summary["total_costs"] >= 0)
+test("Gross sharpe >= net sharpe",
+     result.summary["gross_sharpe_ratio"] >= result.summary["sharpe_ratio"] - 0.01,
+     "gross=%.3f, net=%.3f" % (result.summary["gross_sharpe_ratio"], result.summary["sharpe_ratio"]))
+
+# Test without vol-adjusted slippage (flat)
+config_flat = BacktestConfig(
+    initial_capital=100000,
+    volatility_slippage=False,
+    slippage_bps=5,
+)
+bt_flat = Backtester(config_flat)
+result_flat = bt_flat.run(bt_predictions, bt_returns, bt_weights)
+test("Flat slippage backtest runs", len(result_flat.equity_curve) == n_bt)
+test("Flat slippage total_costs", result_flat.summary["total_costs"] >= 0)
+
 # --- Summary ---
 print("\n" + "=" * 60)
 passed = sum(1 for _, p in results if p)

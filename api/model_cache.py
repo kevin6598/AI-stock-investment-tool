@@ -36,6 +36,7 @@ class ModelCache:
     def __init__(self, artifact_dir: Optional[str] = None):
         self.artifact_dir = artifact_dir or _ARTIFACT_DIR
         self.model = None  # type: Any
+        self.meta_model = None  # type: Any
         self.config = {}  # type: Dict
         self.feature_scaler = None  # type: Any
         self.ticker_list = []  # type: List[str]
@@ -99,7 +100,7 @@ class ModelCache:
                 with open(meta_path, "r") as f:
                     self.metadata = json.load(f)
 
-            # Load model
+            # Load model (support both state_dict and full pickle)
             model_pt = os.path.join(self.artifact_dir, "model.pt")
             model_pkl = os.path.join(self.artifact_dir, "model.pkl")
 
@@ -114,6 +115,13 @@ class ModelCache:
             else:
                 logger.warning("No model file found in artifacts")
                 return self._try_load_from_registry()
+
+            # Load meta-labeling model if available
+            meta_path = os.path.join(self.artifact_dir, "meta_model.pkl")
+            if os.path.exists(meta_path):
+                with open(meta_path, "rb") as f:
+                    self.meta_model = pickle.load(f)
+                logger.info("Loaded meta-labeling model from artifacts")
 
             self._loaded = True
             self._load_time = datetime.now()

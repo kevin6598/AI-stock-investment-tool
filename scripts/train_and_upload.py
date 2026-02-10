@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
+import torch
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,11 +64,15 @@ def train_model(
         add_ticker_embedding_column,
     )
     from training.models import create_model
+    from training.reproducibility import set_all_seeds, save_training_config
+    from training.model_selection import WalkForwardValidator, WalkForwardConfig
+
+    set_all_seeds(42)
 
     horizon_map = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252}
     horizon_days = [horizon_map[h] for h in horizons]
 
-    logger.info(f"Fetching data for {len(tickers)} tickers...")
+    logger.info("Fetching data for %d tickers...", len(tickers))
     stock_dfs = {}
     stock_infos = {}
     for ticker in tickers:
@@ -77,13 +82,13 @@ def train_model(
                 stock_dfs[ticker] = df
                 stock_infos[ticker] = get_stock_info(ticker) or {}
         except Exception as e:
-            logger.warning(f"Failed to fetch {ticker}: {e}")
+            logger.warning("Failed to fetch %s: %s", ticker, e)
 
     if len(stock_dfs) < 2:
-        raise ValueError(f"Only {len(stock_dfs)} tickers fetched; need at least 2")
+        raise ValueError("Only %d tickers fetched; need at least 2" % len(stock_dfs))
 
     valid_tickers = sorted(stock_dfs.keys())
-    logger.info(f"Building panel for {len(valid_tickers)} tickers...")
+    logger.info("Building panel for %d tickers...", len(valid_tickers))
 
     market_df = get_historical_data("SPY", period=period)
     if market_df.empty:
@@ -93,20 +98,47 @@ def train_model(
     panel = cross_sectional_normalize(panel)
     panel, ticker_to_id = add_ticker_embedding_column(panel, valid_tickers)
 
-    target_col = f"fwd_return_{horizon_days[0]}d"
+    target_col = "fwd_return_%dd" % horizon_days[0]
     feature_cols = [c for c in panel.columns
-                    if not c.startswith("fwd_return_") and c not in ("_close", "ticker_id")]
+                    if not c.startswith("fwd_return_")
+                    and not c.startswith("residual_return_")
+                    and not c.startswith("ranked_target_")
+                    and c not in ("_close", "ticker_id")]
 
     X = panel[feature_cols].values.astype(np.float32)
     y = panel[target_col].values.astype(np.float32)
     np.nan_to_num(X, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     np.nan_to_num(y, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # Train/val split (time-based)
-    split = int(len(X) * 0.8)
-    val_split = int(len(X) * 0.9)
+    # Walk-forward split
+    dates = panel.index.get_level_values(0).unique().sort_values()
+    wf_config = WalkForwardConfig(
+        train_start=str(dates[0].date()),
+        test_end=str(dates[-1].date()),
+        train_min_months=36,
+        val_months=6,
+        test_months=6,
+        step_months=6,
+        embargo_days=21,
+        expanding=True,
+    )
+    validator = WalkForwardValidator(wf_config)
+    folds = validator.generate_folds(dates)
 
-    logger.info(f"Training {model_type} model ({X.shape[1]} features, {len(X)} samples)...")
+    # Use last fold for final train/val/test split
+    if folds:
+        last_fold = folds[-1]
+        train_mask = dates <= last_fold.train_end
+        val_mask = (dates > last_fold.train_end) & (dates <= last_fold.val_end)
+        train_dates = dates[train_mask]
+        val_dates = dates[val_mask]
+        split = len(train_dates) * len(valid_tickers)
+        val_split = split + len(val_dates) * len(valid_tickers)
+    else:
+        split = int(len(X) * 0.8)
+        val_split = int(len(X) * 0.9)
+
+    logger.info("Training %s model (%d features, %d samples)...", model_type, X.shape[1], len(X))
     model = create_model(model_type, {
         "epochs": 50,
         "patience": 10,
@@ -121,11 +153,33 @@ def train_model(
     # Export artifacts
     os.makedirs(output_dir, exist_ok=True)
 
-    # Save model
-    model_path = os.path.join(output_dir, "model.pkl")
-    with open(model_path, "wb") as f:
-        pickle.dump(model, f)
-    logger.info(f"Model saved to {model_path}")
+    # Save model using state_dict for PyTorch models
+    if hasattr(model, 'net'):
+        model.net.eval()
+        model_path = os.path.join(output_dir, "model.pt")
+        torch.save(model.net.state_dict(), model_path)
+        logger.info("Model state_dict saved to %s", model_path)
+        # Also save full model as pickle for backward compatibility
+        pkl_path = os.path.join(output_dir, "model.pkl")
+        with open(pkl_path, "wb") as f:
+            pickle.dump(model, f)
+    else:
+        model_path = os.path.join(output_dir, "model.pkl")
+        with open(model_path, "wb") as f:
+            pickle.dump(model, f)
+        logger.info("Model saved to %s", model_path)
+
+    # Save training config for reproducibility
+    save_training_config(
+        output_path=output_dir,
+        training_dates=(str(dates[0].date()), str(dates[-1].date())),
+        tickers=valid_tickers,
+        model_version="%s_v%s" % (model_type, datetime.now().strftime("%Y%m%d_%H%M%S")),
+        feature_list=feature_cols,
+        latent_dim=32,
+        seq_length=60,
+        horizons=horizons,
+    )
 
     # Save feature scaler
     if hasattr(model, 'scaler'):

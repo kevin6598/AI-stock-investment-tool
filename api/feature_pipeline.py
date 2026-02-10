@@ -127,6 +127,30 @@ class ServingFeaturePipeline:
 
         return X_seq, X_static, feat
 
+    def compute_meta_features(
+        self,
+        point_estimate: float,
+        uncertainty: float,
+        confidence: float,
+    ) -> np.ndarray:
+        """Compute meta-labeling features for a single prediction.
+
+        Args:
+            point_estimate: Base model point prediction.
+            uncertainty: Model uncertainty estimate.
+            confidence: Model confidence score.
+
+        Returns:
+            Feature array for meta-label model.
+        """
+        return np.array([[
+            abs(point_estimate),
+            uncertainty,
+            confidence,
+            1.0 if point_estimate > 0 else 0.0,
+            abs(point_estimate) / max(uncertainty, 1e-8),
+        ]], dtype=np.float32)
+
     def get_indicators(
         self,
         ticker: str,

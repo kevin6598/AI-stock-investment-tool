@@ -784,3 +784,144 @@ class VolatilityAwareWeighter:
 
     def get_weights(self) -> Dict[str, float]:
         return {n: float(w) for n, w in zip(COMPONENT_NAMES, self.weights)}
+
+
+# ---------------------------------------------------------------------------
+# 11. IC-Based Model Ensemble
+# ---------------------------------------------------------------------------
+
+class ICBasedModelEnsemble:
+    """Ensemble multiple models using rolling Spearman RankIC weights.
+
+    For each model, compute rolling IC against realized returns, then weight
+    each model proportional to its IC. Apply a correlation penalty to
+    down-weight models whose predictions are highly correlated.
+
+    Usage:
+        ensemble = ICBasedModelEnsemble()
+        weights = ensemble.fit(model_predictions, realized_returns)
+        combined = ensemble.combine(model_predictions)
+    """
+
+    def __init__(
+        self,
+        rolling_window: int = 126,
+        correlation_threshold: float = 0.8,
+        correlation_penalty: float = 0.5,
+    ):
+        """
+        Args:
+            rolling_window: Window for computing rolling IC.
+            correlation_threshold: Correlation above which penalty is applied.
+            correlation_penalty: Multiplicative penalty for correlated models.
+        """
+        self.rolling_window = rolling_window
+        self.correlation_threshold = correlation_threshold
+        self.correlation_penalty = correlation_penalty
+        self.weights = {}  # type: Dict[str, float]
+
+    def fit(
+        self,
+        model_predictions: Dict[str, np.ndarray],
+        realized_returns: np.ndarray,
+    ) -> Dict[str, float]:
+        """Compute IC-based model ensemble weights.
+
+        Args:
+            model_predictions: Dict of model_name -> prediction array.
+            realized_returns: Actual forward returns.
+
+        Returns:
+            Dict of model_name -> weight (sum to 1).
+        """
+        model_names = list(model_predictions.keys())
+        if len(model_names) == 0:
+            return {}
+
+        if len(model_names) == 1:
+            self.weights = {model_names[0]: 1.0}
+            return self.weights
+
+        n = len(realized_returns)
+        window = min(self.rolling_window, n)
+
+        # Compute rolling IC per model
+        model_ics = {}
+        for name in model_names:
+            preds = model_predictions[name]
+            if len(preds) < window:
+                model_ics[name] = 0.0
+                continue
+
+            p = preds[-window:]
+            r = realized_returns[-window:]
+            mask = ~(np.isnan(p) | np.isnan(r))
+            if mask.sum() < 10:
+                model_ics[name] = 0.0
+                continue
+
+            ic, _ = sp_stats.spearmanr(p[mask], r[mask])
+            model_ics[name] = max(ic, 0.0)
+
+        # Compute pairwise prediction correlation
+        corr_penalties = {name: 1.0 for name in model_names}
+        for i, name_i in enumerate(model_names):
+            for j, name_j in enumerate(model_names):
+                if i >= j:
+                    continue
+                pi = model_predictions[name_i]
+                pj = model_predictions[name_j]
+                min_len = min(len(pi), len(pj), window)
+                if min_len < 10:
+                    continue
+                pi_tail = pi[-min_len:]
+                pj_tail = pj[-min_len:]
+                mask = ~(np.isnan(pi_tail) | np.isnan(pj_tail))
+                if mask.sum() < 10:
+                    continue
+                corr, _ = sp_stats.spearmanr(pi_tail[mask], pj_tail[mask])
+                if abs(corr) > self.correlation_threshold:
+                    if model_ics.get(name_i, 0) < model_ics.get(name_j, 0):
+                        corr_penalties[name_i] *= self.correlation_penalty
+                    else:
+                        corr_penalties[name_j] *= self.correlation_penalty
+
+        # Compute weights: IC * penalty, then normalize
+        raw_weights = {}
+        for name in model_names:
+            raw_weights[name] = model_ics.get(name, 0.0) * corr_penalties[name]
+
+        total = sum(raw_weights.values())
+        if total > 0:
+            self.weights = {name: w / total for name, w in raw_weights.items()}
+        else:
+            equal_w = 1.0 / len(model_names)
+            self.weights = {name: equal_w for name in model_names}
+
+        return self.weights
+
+    def combine(
+        self,
+        model_predictions: Dict[str, np.ndarray],
+    ) -> np.ndarray:
+        """Combine model predictions using fitted weights.
+
+        Args:
+            model_predictions: Dict of model_name -> prediction array.
+
+        Returns:
+            Combined prediction array.
+        """
+        if not self.weights:
+            raise ValueError("Must call fit() before combine()")
+
+        lengths = [len(p) for p in model_predictions.values()]
+        out_len = min(lengths) if lengths else 0
+
+        combined = np.zeros(out_len)
+        for name, weight in self.weights.items():
+            preds = model_predictions.get(name)
+            if preds is not None:
+                combined += weight * preds[-out_len:]
+
+        return combined

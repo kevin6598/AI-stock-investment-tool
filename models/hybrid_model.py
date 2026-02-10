@@ -248,8 +248,8 @@ class HybridMultiModalNet(nn.Module):
         else:
             ti_emb = torch.zeros(batch_size, 64, device=x_seq.device)
 
-        # 3. VAE latent factors
-        vae_out = self.vae(x_static)
+        # 3. VAE latent factors (skip reconstruction at inference)
+        vae_out = self.vae(x_static, compute_reconstruction=self.training)
         vae_emb = vae_out["z"]  # (batch, latent_dim)
 
         # 4. Sentiment embedding
@@ -271,10 +271,12 @@ class HybridMultiModalNet(nn.Module):
         retail_out = self.retail_head(h)
         aux_out = self.aux_head(h)
 
-        return {
+        result = {
             **retail_out,
-            **{f"aux_{k}": v for k, v in aux_out.items()},
-            "vae_reconstruction": vae_out["reconstruction"],
+            **{"aux_{}".format(k): v for k, v in aux_out.items()},
             "vae_mu": vae_out["mu"],
             "vae_log_var": vae_out["log_var"],
         }
+        if "reconstruction" in vae_out:
+            result["vae_reconstruction"] = vae_out["reconstruction"]
+        return result
