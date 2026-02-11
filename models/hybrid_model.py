@@ -30,8 +30,10 @@ Sub-modules:
 """
 
 from typing import Dict, List, Optional, Tuple
+import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 
@@ -292,3 +294,210 @@ class HybridMultiModalNet(nn.Module):
         if "reconstruction" in vae_out:
             result["vae_reconstruction"] = vae_out["reconstruction"]
         return result
+
+
+# ============================================================================
+# GatedHybridNet -- IC-Optimized Hybrid Architecture
+# ============================================================================
+
+
+class LightPriceEncoder(nn.Module):
+    """Lightweight LSTM encoder for price/technical features (~50K params).
+
+    2-layer unidirectional LSTM -> LayerNorm -> Dropout -> 64-dim output.
+    """
+
+    def __init__(self, input_size: int, hidden_size: int = 64, dropout: float = 0.2):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=2,
+            batch_first=True,
+            dropout=dropout,
+            bidirectional=False,
+        )
+        self.norm = nn.LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (batch, seq_len, input_size)
+        Returns:
+            (batch, hidden_size) temporal embedding
+        """
+        lstm_out, _ = self.lstm(x)
+        last = lstm_out[:, -1, :]  # last timestep
+        return self.dropout(self.norm(last))
+
+
+class LightNLPEncoder(nn.Module):
+    """Lightweight MLP encoder for NLP features (~10K params).
+
+    Linear(27->32) -> GELU -> Dropout -> Linear(32->32)
+    """
+
+    def __init__(self, input_dim: int = 27, embed_dim: int = 32, dropout: float = 0.2):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, embed_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim, embed_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (batch, input_dim) NLP features
+        Returns:
+            (batch, embed_dim) NLP embedding
+        """
+        return self.net(x)
+
+
+class RegimeConditionedGate(nn.Module):
+    """Regime-aware gating mechanism for fusing NLP into price signal (~300 params).
+
+    Input: temporal_emb(64) + nlp_emb(32) + vol(1) + regime(1) = 98
+    Output: scalar gate g in [0, 1]
+    Fusion: F = g * project(S) + (1-g) * T
+    """
+
+    def __init__(self, temporal_dim: int = 64, nlp_dim: int = 32):
+        super().__init__()
+        gate_input_dim = temporal_dim + nlp_dim + 2  # +vol +regime
+        self.gate = nn.Sequential(
+            nn.Linear(gate_input_dim, 1),
+            nn.Sigmoid(),
+        )
+        self.nlp_project = nn.Linear(nlp_dim, temporal_dim)
+
+    def forward(
+        self,
+        temporal_emb: torch.Tensor,
+        nlp_emb: torch.Tensor,
+        vol: torch.Tensor,
+        regime: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            temporal_emb: (batch, 64)
+            nlp_emb: (batch, 32)
+            vol: (batch, 1) volatility indicator
+            regime: (batch, 1) regime indicator
+
+        Returns:
+            (fused, gate_values): fused (batch, 64), gate_values (batch, 1)
+        """
+        gate_input = torch.cat([temporal_emb, nlp_emb, vol, regime], dim=-1)
+        g = self.gate(gate_input)  # (batch, 1)
+
+        nlp_projected = self.nlp_project(nlp_emb)  # (batch, 64)
+        fused = g * nlp_projected + (1 - g) * temporal_emb
+        return fused, g
+
+
+class CrossSectionalAttentionLayer(nn.Module):
+    """Single-head attention across stocks at the same date (~16K params).
+
+    Q = K = V = Linear(64->64), scaled dot-product + residual + LayerNorm.
+    """
+
+    def __init__(self, embed_dim: int = 64, dropout: float = 0.1):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(
+            embed_dim=embed_dim,
+            num_heads=1,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (batch, embed_dim) -- treated as (1, batch, embed_dim) sequence
+
+        Returns:
+            (batch, embed_dim) with cross-sectional attention applied
+        """
+        # Treat batch dim as sequence for cross-sectional attention
+        x_seq = x.unsqueeze(0)  # (1, batch, embed_dim)
+        attn_out, _ = self.attention(x_seq, x_seq, x_seq)
+        out = self.norm(x_seq + attn_out)
+        return out.squeeze(0)  # (batch, embed_dim)
+
+
+class GatedHybridNet(nn.Module):
+    """IC-optimized hybrid network with gated NLP fusion (~200-400K params).
+
+    Architecture:
+        price_features -> LightPriceEncoder -> T(64)
+        nlp_features   -> LightNLPEncoder   -> S(32)
+        (T, S, vol, regime) -> RegimeConditionedGate -> g
+        F = g * project(S) + (1-g) * T         [64-dim]
+        F -> CrossSectionalAttentionLayer -> F2 [64-dim]
+        F2 -> Linear(64->32) -> ReLU -> Linear(32->1) -> point estimate
+    """
+
+    def __init__(
+        self,
+        n_price_features: int,
+        n_nlp_features: int = 27,
+        temporal_hidden: int = 64,
+        nlp_embed: int = 32,
+        dropout: float = 0.2,
+    ):
+        super().__init__()
+        self.n_price_features = n_price_features
+        self.n_nlp_features = n_nlp_features
+
+        self.price_encoder = LightPriceEncoder(
+            input_size=n_price_features,
+            hidden_size=temporal_hidden,
+            dropout=dropout,
+        )
+        self.nlp_encoder = LightNLPEncoder(
+            input_dim=n_nlp_features,
+            embed_dim=nlp_embed,
+            dropout=dropout,
+        )
+        self.gate = RegimeConditionedGate(
+            temporal_dim=temporal_hidden,
+            nlp_dim=nlp_embed,
+        )
+        self.cross_attention = CrossSectionalAttentionLayer(
+            embed_dim=temporal_hidden,
+            dropout=dropout,
+        )
+        self.head = nn.Sequential(
+            nn.Linear(temporal_hidden, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+        )
+
+    def forward(
+        self,
+        price_seq: torch.Tensor,
+        nlp_features: torch.Tensor,
+        vol: torch.Tensor,
+        regime: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            price_seq: (batch, seq_len, n_price_features) sequential price data
+            nlp_features: (batch, n_nlp_features) NLP features
+            vol: (batch, 1) volatility indicator
+            regime: (batch, 1) regime indicator
+
+        Returns:
+            Dict with 'prediction' (batch, 1) and 'gate' (batch, 1)
+        """
+        T = self.price_encoder(price_seq)       # (batch, 64)
+        S = self.nlp_encoder(nlp_features)      # (batch, 32)
+        F, g = self.gate(T, S, vol, regime)     # (batch, 64), (batch, 1)
+        F2 = self.cross_attention(F)            # (batch, 64)
+        pred = self.head(F2)                    # (batch, 1)
+        return {"prediction": pred, "gate": g}

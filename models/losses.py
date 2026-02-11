@@ -83,6 +83,30 @@ class RankingLoss(nn.Module):
         return loss.mean()
 
 
+class MSEPlusRankingLoss(nn.Module):
+    """Combined MSE + Ranking loss for IC-optimized training.
+
+    loss = MSE(pred, target) + ranking_weight * RankingLoss(pred, target)
+    """
+
+    def __init__(self, ranking_weight: float = 0.3, margin: float = 0.01):
+        super().__init__()
+        self.ranking_weight = ranking_weight
+        self.ranking_loss = RankingLoss(margin=margin)
+
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            predictions: (batch,) or (batch, 1) predicted values
+            targets: (batch,) actual values
+        """
+        if predictions.dim() == 2:
+            predictions = predictions.squeeze(-1)
+        mse = F.mse_loss(predictions, targets)
+        rank = self.ranking_loss(predictions, targets)
+        return mse + self.ranking_weight * rank
+
+
 class CalibrationPenalty(nn.Module):
     """Penalty for quantile crossing (ensures monotonic quantile ordering)."""
 

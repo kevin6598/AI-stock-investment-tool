@@ -1120,12 +1120,357 @@ class HybridMultiModalModel(BaseModel):
 # Factory
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 6. Gated Hybrid Model (IC-Optimized)
+# ---------------------------------------------------------------------------
+
+class GatedHybridModel(BaseModel):
+    """IC-optimized hybrid model with gated NLP fusion.
+
+    Uses GatedHybridNet which routes price features through a light LSTM
+    and NLP features through a gated fusion path with cross-sectional
+    attention. Trained with MSE + ranking loss for IC optimization.
+    """
+
+    def __init__(self, params: Optional[Dict] = None):
+        defaults = {
+            "temporal_hidden": 64,
+            "nlp_embed": 32,
+            "dropout": 0.2,
+            "learning_rate": 1e-3,
+            "weight_decay": 1e-4,
+            "batch_size": 64,
+            "epochs": 50,
+            "patience": 10,
+            "sequence_length": 60,
+            "ranking_weight": 0.3,
+        }
+        merged = {**defaults, **(params or {})}
+        super().__init__(merged)
+        self.net = None
+        self.scaler = StandardScaler()
+        self.feature_names = []  # type: List[str]
+        self._price_cols_idx = []  # type: List[int]
+        self._nlp_cols_idx = []  # type: List[int]
+        self._vol_col_idx = None  # type: Optional[int]
+        self._regime_col_idx = None  # type: Optional[int]
+        self._device = "cpu"
+        self._gate_stats = []  # type: List[Dict[str, float]]
+
+    def _split_feature_indices(self, feature_names: List[str]):
+        """Identify price vs NLP feature column indices."""
+        self._nlp_cols_idx = []
+        self._price_cols_idx = []
+        self._vol_col_idx = None
+        self._regime_col_idx = None
+
+        for i, name in enumerate(feature_names):
+            if name.startswith("nlp_"):
+                self._nlp_cols_idx.append(i)
+            else:
+                self._price_cols_idx.append(i)
+            # Find volatility and regime columns
+            if name == "volatility_21d":
+                self._vol_col_idx = i
+            elif name == "regime_vol_ratio":
+                self._regime_col_idx = i
+
+    def _extract_vol_regime(self, X_static: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract volatility and regime indicators from static features."""
+        batch = X_static.shape[0]
+        if self._vol_col_idx is not None:
+            vol = X_static[:, self._vol_col_idx].reshape(-1, 1)
+        else:
+            vol = np.zeros((batch, 1), dtype=np.float32)
+        if self._regime_col_idx is not None:
+            regime = X_static[:, self._regime_col_idx].reshape(-1, 1)
+        else:
+            regime = np.zeros((batch, 1), dtype=np.float32)
+        return vol, regime
+
+    def _residualize_nlp(self, nlp_batch: np.ndarray) -> np.ndarray:
+        """Sentiment residualization: remove market average sentiment."""
+        if nlp_batch.shape[1] == 0:
+            return nlp_batch
+        market_sent = nlp_batch[:, 0].mean()
+        return nlp_batch - 0.5 * market_sent
+
+    def _orthogonalize_nlp(
+        self, price_batch: np.ndarray, nlp_batch: np.ndarray,
+    ) -> np.ndarray:
+        """Project out price component from NLP if correlation > 0.4."""
+        if price_batch.shape[0] < 10 or nlp_batch.shape[1] == 0:
+            return nlp_batch
+        price_mean = price_batch.mean(axis=1)
+        nlp_mean = nlp_batch.mean(axis=1)
+        if np.std(price_mean) < 1e-8 or np.std(nlp_mean) < 1e-8:
+            return nlp_batch
+        corr = np.corrcoef(price_mean, nlp_mean)[0, 1]
+        if abs(corr) > 0.4:
+            # Gram-Schmidt: project out price component
+            price_norm = price_mean / (np.linalg.norm(price_mean) + 1e-8)
+            for j in range(nlp_batch.shape[1]):
+                proj = np.dot(nlp_batch[:, j], price_norm)
+                nlp_batch[:, j] = nlp_batch[:, j] - proj * price_norm
+        return nlp_batch
+
+    def _build_sequences(self, X, y=None):
+        seq_len = self.params["sequence_length"]
+        n = X.shape[0]
+        if n <= seq_len:
+            pad_len = seq_len - n + 1
+            X = np.vstack([np.zeros((pad_len, X.shape[1])), X])
+            if y is not None:
+                y = np.concatenate([np.zeros(pad_len), y])
+            n = X.shape[0]
+        X_seq, y_seq = [], []
+        for i in range(seq_len, n):
+            X_seq.append(X[i - seq_len:i])
+            if y is not None:
+                y_seq.append(y[i])
+        X_seq = np.array(X_seq, dtype=np.float32)
+        y_seq = np.array(y_seq, dtype=np.float32) if y is not None else None
+        return X_seq, y_seq
+
+    def fit(self, X_train: np.ndarray, y_train: np.ndarray,
+            X_val: Optional[np.ndarray] = None,
+            y_val: Optional[np.ndarray] = None,
+            feature_names: Optional[List[str]] = None):
+        import torch
+        from torch.utils.data import TensorDataset, DataLoader
+        from models.hybrid_model import GatedHybridNet
+        from models.losses import MSEPlusRankingLoss
+        from training.reproducibility import set_all_seeds
+
+        set_all_seeds(42)
+
+        self.feature_names = feature_names or [
+            "f{}".format(i) for i in range(X_train.shape[1])
+        ]
+        self._split_feature_indices(self.feature_names)
+
+        n_price = len(self._price_cols_idx)
+        n_nlp = len(self._nlp_cols_idx)
+        if n_nlp == 0:
+            n_nlp = 1  # minimum dimension for NLP encoder
+
+        # Scale features
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_train_seq, y_train_seq = self._build_sequences(X_train_scaled, y_train)
+
+        if X_val is not None and y_val is not None:
+            X_val_scaled = self.scaler.transform(X_val)
+            X_val_seq, y_val_seq = self._build_sequences(X_val_scaled, y_val)
+        else:
+            X_val_seq, y_val_seq = None, None
+
+        self.net = GatedHybridNet(
+            n_price_features=n_price,
+            n_nlp_features=n_nlp,
+            temporal_hidden=self.params["temporal_hidden"],
+            nlp_embed=self.params["nlp_embed"],
+            dropout=self.params["dropout"],
+        ).to(self._device)
+
+        param_count = sum(p.numel() for p in self.net.parameters())
+        logger.info("GatedHybridNet params: %d", param_count)
+
+        criterion = MSEPlusRankingLoss(
+            ranking_weight=self.params["ranking_weight"],
+        )
+        optimizer = torch.optim.AdamW(
+            self.net.parameters(),
+            lr=self.params["learning_rate"],
+            weight_decay=self.params["weight_decay"],
+        )
+
+        train_ds = TensorDataset(
+            torch.from_numpy(X_train_seq),
+            torch.from_numpy(y_train_seq),
+        )
+        train_loader = DataLoader(
+            train_ds, batch_size=self.params["batch_size"], shuffle=True,
+        )
+
+        best_val_loss = float("inf")
+        patience_counter = 0
+        self._gate_stats = []
+
+        for epoch in range(self.params["epochs"]):
+            self.net.train()
+            epoch_gates = []
+
+            for X_b, y_b in train_loader:
+                X_b = X_b.to(self._device)
+                y_b = y_b.to(self._device)
+
+                # Split features: price sequence and NLP static
+                x_static = X_b[:, -1, :]  # last timestep
+                price_seq = X_b[:, :, self._price_cols_idx] if self._price_cols_idx else X_b
+
+                if self._nlp_cols_idx:
+                    nlp_np = x_static[:, self._nlp_cols_idx].cpu().numpy()
+                    # Apply residualization and orthogonalization
+                    nlp_np = self._residualize_nlp(nlp_np)
+                    price_np = x_static[:, self._price_cols_idx].cpu().numpy() if self._price_cols_idx else x_static.cpu().numpy()
+                    nlp_np = self._orthogonalize_nlp(price_np, nlp_np)
+                    nlp_feat = torch.from_numpy(nlp_np).float().to(self._device)
+                else:
+                    nlp_feat = torch.zeros(
+                        X_b.size(0), n_nlp, device=self._device,
+                    )
+
+                vol_np, regime_np = self._extract_vol_regime(x_static.cpu().numpy())
+                vol_t = torch.from_numpy(vol_np).float().to(self._device)
+                regime_t = torch.from_numpy(regime_np).float().to(self._device)
+
+                optimizer.zero_grad()
+                out = self.net(price_seq, nlp_feat, vol_t, regime_t)
+                loss = criterion(out["prediction"].squeeze(-1), y_b)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
+                optimizer.step()
+
+                epoch_gates.append(out["gate"].detach().cpu().numpy())
+
+            # Log gate statistics
+            all_gates = np.concatenate(epoch_gates)
+            self._gate_stats.append({
+                "epoch": epoch,
+                "gate_mean": float(np.mean(all_gates)),
+                "gate_std": float(np.std(all_gates)),
+            })
+
+            # Validation
+            if X_val_seq is not None:
+                self.net.eval()
+                with torch.no_grad():
+                    Xv = torch.from_numpy(X_val_seq).to(self._device)
+                    yv = torch.from_numpy(y_val_seq).to(self._device)
+
+                    xv_static = Xv[:, -1, :]
+                    price_v = Xv[:, :, self._price_cols_idx] if self._price_cols_idx else Xv
+
+                    if self._nlp_cols_idx:
+                        nlp_v_np = xv_static[:, self._nlp_cols_idx].cpu().numpy()
+                        nlp_v_np = self._residualize_nlp(nlp_v_np)
+                        nlp_v = torch.from_numpy(nlp_v_np).float().to(self._device)
+                    else:
+                        nlp_v = torch.zeros(
+                            Xv.size(0), n_nlp, device=self._device,
+                        )
+
+                    vol_v_np, regime_v_np = self._extract_vol_regime(
+                        xv_static.cpu().numpy(),
+                    )
+                    vol_v = torch.from_numpy(vol_v_np).float().to(self._device)
+                    regime_v = torch.from_numpy(regime_v_np).float().to(self._device)
+
+                    v_out = self.net(price_v, nlp_v, vol_v, regime_v)
+                    val_loss = criterion(
+                        v_out["prediction"].squeeze(-1), yv,
+                    ).item()
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    self._best_state = {
+                        k: v.clone() for k, v in self.net.state_dict().items()
+                    }
+                else:
+                    patience_counter += 1
+                    if patience_counter >= self.params["patience"]:
+                        break
+
+        if hasattr(self, "_best_state"):
+            self.net.load_state_dict(self._best_state)
+
+        self.net.eval()
+        self.is_fitted = True
+        logger.info(
+            "GatedHybridModel trained: %d epochs, gate_mean=%.3f",
+            epoch + 1,
+            self._gate_stats[-1]["gate_mean"] if self._gate_stats else 0,
+        )
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        import torch
+        X_scaled = self.scaler.transform(X)
+        X_seq, _ = self._build_sequences(X_scaled)
+
+        self.net.eval()
+        with torch.no_grad():
+            X_t = torch.from_numpy(X_seq).to(self._device)
+            x_static = X_t[:, -1, :]
+            price_seq = X_t[:, :, self._price_cols_idx] if self._price_cols_idx else X_t
+
+            n_nlp = len(self._nlp_cols_idx) if self._nlp_cols_idx else 1
+            if self._nlp_cols_idx:
+                nlp_np = x_static[:, self._nlp_cols_idx].cpu().numpy()
+                nlp_np = self._residualize_nlp(nlp_np)
+                nlp_feat = torch.from_numpy(nlp_np).float().to(self._device)
+            else:
+                nlp_feat = torch.zeros(
+                    X_t.size(0), n_nlp, device=self._device,
+                )
+
+            vol_np, regime_np = self._extract_vol_regime(x_static.cpu().numpy())
+            vol_t = torch.from_numpy(vol_np).float().to(self._device)
+            regime_t = torch.from_numpy(regime_np).float().to(self._device)
+
+            out = self.net(price_seq, nlp_feat, vol_t, regime_t)
+            preds = out["prediction"].squeeze(-1).cpu().numpy()
+
+        pad_len = X.shape[0] - len(preds)
+        if pad_len > 0:
+            preds = np.concatenate([np.full(pad_len, np.nan), preds])
+        return preds
+
+    def predict_quantiles(self, X: np.ndarray,
+                          quantiles: Optional[List[float]] = None) -> Dict[float, np.ndarray]:
+        if quantiles is None:
+            quantiles = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
+
+        point = self.predict(X)
+        residual_std = max(np.nanstd(point), 1e-8)
+
+        from scipy.stats import norm
+        result = {}
+        for q in quantiles:
+            z = norm.ppf(q)
+            result[q] = point + z * residual_std
+        return result
+
+    def get_feature_importance(self) -> Dict[str, float]:
+        if not self.feature_names:
+            return {}
+        n = len(self.feature_names)
+        return {name: 1.0 / n for name in self.feature_names}
+
+    def get_gate_stats(self) -> List[Dict[str, float]]:
+        """Return gate activation statistics per epoch."""
+        return self._gate_stats
+
+    def get_diagnostics(self) -> Dict[str, object]:
+        """Return comprehensive diagnostics for this model."""
+        diag = {
+            "param_count": sum(
+                p.numel() for p in self.net.parameters()
+            ) if self.net else 0,
+            "n_price_features": len(self._price_cols_idx),
+            "n_nlp_features": len(self._nlp_cols_idx),
+            "gate_stats": self._gate_stats[-5:] if self._gate_stats else [],
+        }
+        return diag
+
+
 MODEL_REGISTRY = {
     "elastic_net": ElasticNetModel,
     "lightgbm": LightGBMModel,
     "lstm_attention": LSTMAttentionModel,
     "transformer": TransformerModel,
     "hybrid_multimodal": HybridMultiModalModel,
+    "gated_hybrid": GatedHybridModel,
 }
 
 

@@ -105,7 +105,7 @@ def main():
 
     # Map horizon names to trading days
     horizon_map = {
-        "1M": 21, "3M": 63, "6M": 126, "1Y": 252, "3Y": 756,
+        "1W": 5, "2W": 10, "1M": 21, "3M": 63, "6M": 126, "1Y": 252, "3Y": 756,
     }
     horizons = {}
     for h in args.horizons:

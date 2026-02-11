@@ -215,10 +215,13 @@ def compute_prediction_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Predic
     if n < 5:
         return PredictionMetrics(n_samples=n)
 
-    if np.std(y_p) < 1e-12 or np.std(y_t) < 1e-12:
+    if np.std(y_p) < 1e-8 or np.std(y_t) < 1e-8:
         ic = 0.0
     else:
         ic, _ = sp_stats.spearmanr(y_p, y_t)
+        # Guard against NaN from constant or near-constant predictions
+        if np.isnan(ic):
+            ic = 0.0
     rmse = np.sqrt(np.mean((y_t - y_p) ** 2))
     mae = np.mean(np.abs(y_t - y_p))
     hit_ratio = np.mean(np.sign(y_t) == np.sign(y_p))

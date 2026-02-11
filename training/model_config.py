@@ -13,6 +13,7 @@ Components:
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 import itertools
+import math
 import time
 import logging
 import numpy as np
@@ -301,6 +302,140 @@ class MultiConfigRunner:
                 best_params=config.to_dict(),
             ))
 
-        # Sort by mean IC descending
-        results.sort(key=lambda r: r.evaluation.mean_ic, reverse=True)
-        return results
+        # Filter out results with NaN IC, then sort descending
+        valid_results = [
+            r for r in results
+            if not math.isnan(r.evaluation.mean_ic)
+        ]
+        nan_results = [
+            r for r in results
+            if math.isnan(r.evaluation.mean_ic)
+        ]
+        valid_results.sort(
+            key=lambda r: r.evaluation.mean_ic, reverse=True,
+        )
+        # Append NaN results at the end so they never get selected as best
+        return valid_results + nan_results
+
+
+def run_light_comparison(
+    panel: pd.DataFrame,
+    target_col: str,
+    feature_cols: List[str],
+    models: Optional[List[str]] = None,
+    horizons: Optional[Dict[str, int]] = None,
+    n_splits: int = 2,
+) -> List[Dict]:
+    """Run a lightweight model comparison with minimal walk-forward splits.
+
+    No HP search -- uses default parameters for speed.
+
+    Args:
+        panel: Panel DataFrame with MultiIndex (date, ticker).
+        target_col: Name of the target column.
+        feature_cols: List of feature column names.
+        models: Model types to compare. Default: gated_hybrid, lstm_attention, lightgbm.
+        horizons: Dict of horizon_name -> trading_days. Default: 5D + 1M.
+        n_splits: Number of walk-forward splits (default 2).
+
+    Returns:
+        List of dicts with model comparison results, sorted by composite score.
+    """
+    from training.model_selection import (
+        WalkForwardValidator, WalkForwardConfig,
+        evaluate_model_on_fold, ModelEvaluation, FoldResult,
+    )
+    from training.models import create_model
+
+    if models is None:
+        models = ["gated_hybrid", "lstm_attention", "lightgbm"]
+    if horizons is None:
+        horizons = {"5D": 5, "1M": 21}
+
+    if isinstance(panel.index, pd.MultiIndex):
+        dates = panel.index.get_level_values(0).unique().sort_values()
+    else:
+        dates = panel.index.unique().sort_values()
+
+    wf_config = WalkForwardConfig(
+        train_start=str(dates[0].date()),
+        test_end=str(dates[-1].date()),
+        train_min_months=24,
+        val_months=6,
+        test_months=6,
+        step_months=12,
+        embargo_days=26,
+        expanding=True,
+    )
+    validator = WalkForwardValidator(wf_config)
+    folds = validator.generate_folds(pd.DatetimeIndex(dates))[:n_splits]
+
+    comparison = []
+
+    for model_type in models:
+        for horizon_name, horizon_days in horizons.items():
+            h_target = "fwd_return_{}d".format(horizon_days)
+            if h_target not in panel.columns:
+                h_target = target_col
+
+            fold_results = []
+            for fold in folds:
+                try:
+                    train_df, val_df, test_df = validator.split_data(panel, fold)
+                    model = create_model(model_type)
+                    fr = evaluate_model_on_fold(
+                        model=model,
+                        train_df=train_df,
+                        val_df=val_df,
+                        test_df=test_df,
+                        target_col=h_target,
+                        feature_cols=feature_cols,
+                    )
+                    fr.fold_idx = fold.fold_idx
+                    fold_results.append(fr)
+                except Exception as e:
+                    logger.warning("Light comparison fold failed: %s %s: %s",
+                                   model_type, horizon_name, e)
+                    continue
+
+            if not fold_results:
+                continue
+
+            evaluation = ModelEvaluation(
+                model_name=model_type,
+                horizon=horizon_name,
+                fold_results=fold_results,
+            )
+
+            # Composite score
+            ic = evaluation.mean_ic
+            icir = evaluation.icir
+            sharpe = evaluation.mean_sharpe
+            ic_std = float(np.std([f.prediction.ic for f in fold_results]))
+            overfit = evaluation.overfit_ratio if evaluation.overfit_ratio != float("inf") else 5.0
+
+            if math.isnan(ic):
+                ic = 0.0
+            if math.isnan(icir):
+                icir = 0.0
+
+            composite = 1.0 * ic + 0.5 * icir + 0.3 * sharpe - 0.3 * ic_std
+            if overfit > 3.0:
+                composite -= 0.5
+
+            comparison.append({
+                "model_type": model_type,
+                "horizon": horizon_name,
+                "ic": ic,
+                "icir": icir,
+                "sharpe": sharpe,
+                "ic_std": ic_std,
+                "overfit_ratio": overfit,
+                "composite": composite,
+                "n_folds": len(fold_results),
+            })
+            logger.info("Light comparison %s/%s: IC=%.4f, composite=%.4f",
+                         model_type, horizon_name, ic, composite)
+
+    comparison.sort(key=lambda x: x["composite"], reverse=True)
+    return comparison

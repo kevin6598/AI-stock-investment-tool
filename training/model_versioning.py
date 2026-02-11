@@ -12,6 +12,7 @@ Features:
 
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
+import math
 import os
 import sqlite3
 import json
@@ -110,7 +111,7 @@ class ModelRegistry:
         os.makedirs(artifacts_dir, exist_ok=True)
 
         # Determine save method
-        is_torch_model = model_type in ("lstm_attention", "transformer")
+        is_torch_model = model_type in ("lstm_attention", "transformer", "gated_hybrid", "hybrid_multimodal")
         if is_torch_model:
             artifact_path = os.path.join(artifacts_dir, f"{version_id}.pt")
             self._save_torch(model, artifact_path)
@@ -174,7 +175,7 @@ class ModelRegistry:
         if not os.path.exists(artifact_path):
             raise FileNotFoundError(f"Artifact missing: {artifact_path}")
 
-        is_torch_model = model_type in ("lstm_attention", "transformer")
+        is_torch_model = model_type in ("lstm_attention", "transformer", "gated_hybrid", "hybrid_multimodal")
         if is_torch_model:
             return self._load_torch(artifact_path)
         else:
@@ -288,8 +289,10 @@ class ModelRegistry:
         """Select best model using a composite robustness score.
 
         Composite score balances predictive power with robustness:
-          score = IC_mean + 0.5 * ICIR + 0.3 * Sharpe + 0.1 * sentiment_ic
-                  - 0.5 * overfitting_score - 0.3 * stress_drawdown
+          score = 1.0*IC + 0.5*ICIR + 0.3*Sharpe - 0.3*IC_std
+                  - 0.5*overfitting_score - 0.3*stress_drawdown
+
+        Versions with any NaN key metric are skipped.
 
         Args:
             horizon: Filter by horizon (e.g. "1M"). If None, searches all.
@@ -312,13 +315,20 @@ class ModelRegistry:
             sharpe = m.get("mean_sharpe", 0.0)
             overfit = m.get("overfitting_score", 0.5)
             stress_dd = abs(m.get("stress_max_drawdown", 0.3))
-            sentiment_ic = m.get("sentiment_ic", 0.0)
+            ic_std = m.get("ic_std", 0.0)
+
+            # Skip versions where any key metric is NaN
+            key_values = [ic_mean, icir, sharpe, overfit, stress_dd, ic_std]
+            if any(math.isnan(v) for v in key_values if isinstance(v, float)):
+                logger.debug("Skipping version %s: NaN in key metrics",
+                             v.version_id)
+                continue
 
             score = (
-                ic_mean
+                1.0 * ic_mean
                 + 0.5 * icir
                 + 0.3 * sharpe
-                + 0.1 * sentiment_ic
+                - 0.3 * ic_std
                 - 0.5 * overfit
                 - 0.3 * stress_dd
             )

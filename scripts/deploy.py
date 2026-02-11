@@ -14,10 +14,11 @@ import sys
 import os
 import argparse
 import json
+import math
 import shutil
 import logging
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -163,6 +164,73 @@ def validate_sentiment_model(config: dict) -> bool:
             )
             return False
 
+    return True
+
+
+def check_deployment_eligibility(
+    metrics: Dict[str, float],
+    baseline_metrics: Optional[Dict[str, float]] = None,
+) -> bool:
+    """Check whether a model meets deployment eligibility criteria.
+
+    Requirements:
+      - IC >= baseline IC + 0.01 (if baseline provided)
+      - ICIR improvement over baseline (if baseline provided)
+      - Sharpe >= baseline Sharpe (if baseline provided)
+      - Overfitting score < 0.6
+      - No NaN in any metric
+
+    Args:
+        metrics: Dict of model evaluation metrics.
+        baseline_metrics: Optional dict of baseline model metrics.
+
+    Returns:
+        True if model is eligible for deployment.
+    """
+    # Check for NaN in any metric
+    for key, val in metrics.items():
+        if isinstance(val, float) and math.isnan(val):
+            logger.error("Deployment rejected: NaN in metric '%s'", key)
+            return False
+
+    # Overfitting check
+    overfit = metrics.get("overfitting_score", 0.0)
+    if overfit >= 0.6:
+        logger.error(
+            "Deployment rejected: overfitting score %.3f >= 0.6", overfit,
+        )
+        return False
+
+    # Baseline comparison
+    if baseline_metrics is not None:
+        ic = metrics.get("mean_ic", 0.0)
+        base_ic = baseline_metrics.get("mean_ic", 0.0)
+        if ic < base_ic + 0.01:
+            logger.error(
+                "Deployment rejected: IC %.4f < baseline %.4f + 0.01",
+                ic, base_ic,
+            )
+            return False
+
+        icir = metrics.get("icir", 0.0)
+        base_icir = baseline_metrics.get("icir", 0.0)
+        if icir < base_icir:
+            logger.error(
+                "Deployment rejected: ICIR %.4f < baseline %.4f",
+                icir, base_icir,
+            )
+            return False
+
+        sharpe = metrics.get("mean_sharpe", 0.0)
+        base_sharpe = baseline_metrics.get("mean_sharpe", 0.0)
+        if sharpe < base_sharpe:
+            logger.error(
+                "Deployment rejected: Sharpe %.4f < baseline %.4f",
+                sharpe, base_sharpe,
+            )
+            return False
+
+    logger.info("Deployment eligibility check passed")
     return True
 
 

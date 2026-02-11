@@ -746,7 +746,7 @@ def build_feature_matrix(
         Rows with insufficient history are dropped.
     """
     if forward_horizons is None:
-        forward_horizons = [21, 63, 126]
+        forward_horizons = [5, 10, 21, 63, 126]
 
     # Compute all feature groups
     tech = compute_technical_features(stock_df)
@@ -855,7 +855,7 @@ def build_panel_dataset(
 
     # Compute cross-sectional ranked targets from residual returns
     if forward_horizons is None:
-        forward_horizons = [21, 63, 126]
+        forward_horizons = [5, 10, 21, 63, 126]
     for h in forward_horizons:
         residual_col = "residual_return_{}d".format(h)
         if residual_col in panel.columns:
