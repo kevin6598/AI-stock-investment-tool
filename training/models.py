@@ -764,7 +764,7 @@ class HybridMultiModalModel(BaseModel):
             "patience": 15,
             "sequence_length": 60,
             "n_tickers": 50,
-            "sentiment_dim": 7,
+            "sentiment_dim": 27,
         }
         merged = {**defaults, **(params or {})}
         super().__init__(merged)
@@ -856,6 +856,12 @@ class HybridMultiModalModel(BaseModel):
 
         self.feature_names = feature_names or ["f{}".format(i) for i in range(X_train.shape[1])]
         self._input_size = X_train.shape[1]
+
+        # Dynamically compute sentiment_dim from nlp_* feature count
+        if feature_names:
+            nlp_count = len([c for c in feature_names if c.startswith("nlp_")])
+            if nlp_count > 0:
+                self.params["sentiment_dim"] = nlp_count
 
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_train_seq, y_train_seq = self._build_sequences(X_train_scaled, y_train)

@@ -202,6 +202,64 @@ class PortfolioDecisionEngine:
         ranked = [pred for _, pred in scored[:self.config.max_positions]]
         return ranked
 
+    def rank_candidates_v2(
+        self,
+        candidates: List[Any],
+    ) -> List[Any]:
+        """Enhanced ranking with risk and sentiment integration.
+
+        Score = 0.30 * p_up
+             + 0.25 * sigmoid(expected_return * 100)
+             + 0.15 * confidence
+             + 0.10 * meta_trade_probability
+             + 0.10 * (1 - risk_score)
+             + 0.10 * sentiment_score
+
+        Args:
+            candidates: List of passed predictions.
+
+        Returns:
+            Sorted list (best first), limited to max_positions.
+        """
+        scored = []
+        for pred in candidates:
+            p_up = _get_field(pred, "probability_up", 0.5)
+            point = _get_field(pred, "point_estimate", 0.0)
+            confidence = _get_field(pred, "confidence", 0.0)
+            meta_prob = _get_field(pred, "meta_trade_probability", 0.0) or 0.0
+            uncertainty = _get_field(pred, "uncertainty", 0.5) or 0.5
+            risk_score = _get_field(pred, "risk_score", uncertainty)
+
+            # Get sentiment score
+            sentiment_score = 0.0
+            ticker = _get_field(pred, "ticker", "")
+            if ticker:
+                try:
+                    from models.sentiment import get_extended_sentiment_features
+                    feat = get_extended_sentiment_features(ticker)
+                    sentiment_score = feat.get("sentiment_weighted", 0.0)
+                except Exception:
+                    pass
+
+            # Normalize return to [0, 1] using sigmoid
+            norm_return = 1.0 / (1.0 + np.exp(-point * 100))
+            # Normalize sentiment to [0, 1]
+            norm_sentiment = max(0.0, min(1.0, (sentiment_score + 1.0) / 2.0))
+
+            score = (
+                0.30 * p_up
+                + 0.25 * norm_return
+                + 0.15 * confidence
+                + 0.10 * meta_prob
+                + 0.10 * (1.0 - risk_score)
+                + 0.10 * norm_sentiment
+            )
+            scored.append((score, pred))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        ranked = [pred for _, pred in scored[:self.config.max_positions]]
+        return ranked
+
     def allocate(
         self,
         candidates: List[Any],

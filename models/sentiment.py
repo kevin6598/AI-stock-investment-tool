@@ -662,3 +662,208 @@ def get_extended_sentiment_features(
         logger.debug(f"Extended sentiment features unavailable for {ticker}: {e}")
 
     return extended
+
+
+# ---------------------------------------------------------------------------
+# Sentence Embedding Sentiment Model
+# ---------------------------------------------------------------------------
+
+_HAS_SENTENCE_TRANSFORMERS = False
+try:
+    from sentence_transformers import SentenceTransformer
+    _HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    pass
+
+
+class SentenceEmbeddingSentimentModel:
+    """Sentence-embedding-based sentiment scoring using all-MiniLM-L6-v2.
+
+    Encodes headlines into 384-dim embeddings, applies PCA to 8 dimensions,
+    and computes cosine similarity against positive/negative reference centroids.
+
+    Output: sentence_sentiment_score (1 dim) + sentence_pca_0..7 (8 dims) = 9 features.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+        pca_dims: int = 8,
+    ):
+        if not _HAS_SENTENCE_TRANSFORMERS:
+            raise ImportError(
+                "sentence-transformers required. "
+                "Install with: pip install sentence-transformers"
+            )
+        self.pca_dims = pca_dims
+        self._model = SentenceTransformer(model_name)
+        self._pca = None  # fitted lazily
+        # Reference texts for centroid computation
+        self._pos_refs = [
+            "strong earnings beat expectations revenue growth",
+            "stock surges on positive outlook upgrade",
+            "record profit margins innovative breakthrough",
+            "bullish momentum dividend increase expansion",
+        ]
+        self._neg_refs = [
+            "earnings miss revenue decline loss warning",
+            "stock plunges on weak guidance downgrade",
+            "bankruptcy risk debt default recession",
+            "bearish selloff layoffs fraud investigation",
+        ]
+        self._pos_centroid = None  # type: Optional[np.ndarray]
+        self._neg_centroid = None  # type: Optional[np.ndarray]
+        self._init_centroids()
+
+    def _init_centroids(self):
+        """Compute reference centroids for positive/negative sentiment."""
+        pos_emb = self._model.encode(self._pos_refs, show_progress_bar=False)
+        neg_emb = self._model.encode(self._neg_refs, show_progress_bar=False)
+        self._pos_centroid = np.mean(pos_emb, axis=0)
+        self._neg_centroid = np.mean(neg_emb, axis=0)
+        # Normalize
+        self._pos_centroid = self._pos_centroid / (np.linalg.norm(self._pos_centroid) + 1e-8)
+        self._neg_centroid = self._neg_centroid / (np.linalg.norm(self._neg_centroid) + 1e-8)
+
+    def _cosine_sim(self, a: np.ndarray, b: np.ndarray) -> float:
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
+
+    def score_texts(self, texts: List[str]) -> Dict[str, float]:
+        """Score a batch of texts and return aggregated features.
+
+        Returns:
+            Dict with sentence_sentiment_score and sentence_pca_0..7.
+        """
+        if not texts:
+            result = {"sentence_sentiment_score": 0.0, "sentence_similarity": 0.0}
+            for i in range(self.pca_dims):
+                result["sentence_pca_%d" % i] = 0.0
+            return result
+
+        embeddings = self._model.encode(texts, show_progress_bar=False)
+
+        # Cosine similarity to positive/negative centroids
+        scores = []
+        for emb in embeddings:
+            emb_norm = emb / (np.linalg.norm(emb) + 1e-8)
+            pos_sim = self._cosine_sim(emb_norm, self._pos_centroid)
+            neg_sim = self._cosine_sim(emb_norm, self._neg_centroid)
+            scores.append(pos_sim - neg_sim)
+
+        avg_score = float(np.mean(scores))
+        avg_similarity = float(np.mean(np.abs(scores)))
+
+        # PCA reduction
+        from sklearn.decomposition import PCA
+        if self._pca is None:
+            n_components = min(self.pca_dims, embeddings.shape[0], embeddings.shape[1])
+            self._pca = PCA(n_components=n_components)
+            pca_result = self._pca.fit_transform(embeddings)
+        else:
+            pca_result = self._pca.transform(embeddings)
+
+        # Average PCA components across all headlines
+        avg_pca = np.mean(pca_result, axis=0)
+
+        result = {
+            "sentence_sentiment_score": avg_score,
+            "sentence_similarity": avg_similarity,
+        }
+        for i in range(self.pca_dims):
+            if i < len(avg_pca):
+                result["sentence_pca_%d" % i] = float(avg_pca[i])
+            else:
+                result["sentence_pca_%d" % i] = 0.0
+
+        return result
+
+
+class DualSentimentEngine:
+    """Dual sentiment engine combining FinBERT + Sentence Embedding models.
+
+    Weighted average: final_score = 0.6 * finbert_score + 0.4 * sentence_score
+    Falls back to single-engine if one model is unavailable.
+    """
+
+    def __init__(
+        self,
+        finbert_weight: float = 0.6,
+        sentence_weight: float = 0.4,
+        use_finbert: bool = True,
+    ):
+        self.finbert_weight = finbert_weight
+        self.sentence_weight = sentence_weight
+        self._finbert_model = None  # type: Optional[SentimentModel]
+        self._sentence_model = None  # type: Optional[SentenceEmbeddingSentimentModel]
+        self._aggregator = SentimentAggregator()
+
+        # Initialize FinBERT
+        try:
+            self._finbert_model = SentimentModel(use_finbert=use_finbert)
+        except Exception as e:
+            logger.warning("FinBERT initialization failed: %s", e)
+
+        # Initialize Sentence Embedding model
+        try:
+            self._sentence_model = SentenceEmbeddingSentimentModel()
+            logger.info("Loaded sentence embedding sentiment model")
+        except Exception as e:
+            logger.info("Sentence embedding model unavailable: %s", e)
+
+    @property
+    def has_finbert(self) -> bool:
+        return self._finbert_model is not None
+
+    @property
+    def has_sentence_model(self) -> bool:
+        return self._sentence_model is not None
+
+    def score(self, ticker: str) -> Dict[str, float]:
+        """Compute dual-engine sentiment features for a ticker.
+
+        Returns:
+            Dict with all base features plus dual-engine additions:
+              dual_sentiment_score, sentence_similarity, sentence_pca_0..7
+        """
+        # Get base features from FinBERT path
+        base = get_extended_sentiment_features(
+            ticker, self._finbert_model, self._aggregator,
+        )
+
+        # Defaults for dual-engine features
+        dual_features = {
+            "dual_sentiment_score": base.get("sentiment_weighted", 0.0),
+            "sentence_similarity": 0.0,
+        }
+        for i in range(8):
+            dual_features["sentence_pca_%d" % i] = 0.0
+
+        # Sentence embedding scoring
+        try:
+            if self._sentence_model is not None:
+                from data.news_api import fetch_news
+                news_items = fetch_news(ticker)
+                if news_items:
+                    titles = [item["title"] for item in news_items
+                              if item.get("title")]
+                    if titles:
+                        sent_features = self._sentence_model.score_texts(titles)
+                        finbert_score = base.get("sentiment_weighted", 0.0)
+                        sentence_score = sent_features.get(
+                            "sentence_sentiment_score", 0.0,
+                        )
+                        # Weighted combination
+                        dual_features["dual_sentiment_score"] = (
+                            self.finbert_weight * finbert_score
+                            + self.sentence_weight * sentence_score
+                        )
+                        dual_features["sentence_similarity"] = sent_features.get(
+                            "sentence_similarity", 0.0,
+                        )
+                        for i in range(8):
+                            key = "sentence_pca_%d" % i
+                            dual_features[key] = sent_features.get(key, 0.0)
+        except Exception as e:
+            logger.debug("Sentence embedding scoring failed for %s: %s", ticker, e)
+
+        return {**base, **dual_features}

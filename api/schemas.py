@@ -117,3 +117,29 @@ class HealthResponse(BaseModel):
     model_loaded: bool
     model_info: Optional[ModelInfo] = None
     uptime_seconds: float = 0.0
+
+
+# --- Top 10 Models ---
+
+class Top10StockSchema(BaseModel):
+    rank: int
+    ticker: str
+    score: float
+    direction: str
+    p_up: float = Field(ge=0, le=1)
+    expected_return: float
+    confidence: float = Field(ge=0, le=1)
+    risk_score: float = Field(ge=0, le=1)
+    sentiment_score: float
+    allocation_weight: float = Field(ge=0, le=1)
+    reasons: List[str]
+
+
+class Top10Response(BaseModel):
+    market: str
+    horizon: str
+    stocks: List[Top10StockSchema]
+    generated_at: str
+    model_version: Optional[str] = None
+    total_candidates: int
+    pass_rate: float

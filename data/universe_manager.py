@@ -96,6 +96,36 @@ class UniverseManager:
             return "^KS11"
         return "SPY"
 
+    def get_market_universe(self, market: str) -> Dict[str, Optional[str]]:
+        """Get active tickers with market metadata.
+
+        Args:
+            market: "US", "KR", or "ALL".
+
+        Returns:
+            Dict of ticker -> exchange name (e.g. "NYSE/NASDAQ", "KOSPI", "KOSDAQ").
+        """
+        result = {}
+        for m in self._members:
+            if m.end_date is not None:
+                continue
+            ticker_upper = m.ticker.upper()
+            is_kr = ticker_upper.endswith((".KS", ".KQ"))
+
+            if market.upper() == "US" and is_kr:
+                continue
+            if market.upper() == "KR" and not is_kr:
+                continue
+
+            if ticker_upper.endswith(".KS"):
+                exchange = "KOSPI"
+            elif ticker_upper.endswith(".KQ"):
+                exchange = "KOSDAQ"
+            else:
+                exchange = "NYSE/NASDAQ"
+            result[m.ticker] = exchange
+        return result
+
     def get_universe_by_market(self, market: str) -> List[str]:
         """Filter active tickers by market/exchange.
 
@@ -233,6 +263,13 @@ class UniverseManager:
             TickerMembership("000270.KS", "2000-01-01", None, "Automotive"),        # Kia
             TickerMembership("068270.KS", "2005-06-24", None, "Biotechnology"),     # Celltrion
             TickerMembership("028260.KS", "2000-01-01", None, "Industrials"),       # Samsung C&T
+            # --- Korean KOSDAQ (.KQ) (6) ---
+            TickerMembership("293490.KQ", "2018-09-14", None, "Entertainment"),     # Kakao Games
+            TickerMembership("263750.KQ", "2017-10-10", None, "Entertainment"),     # Pearl Abyss
+            TickerMembership("112040.KQ", "2009-08-28", None, "Entertainment"),     # Wemade
+            TickerMembership("196170.KQ", "2016-07-21", None, "Technology"),        # Alteogen
+            TickerMembership("247540.KQ", "2018-10-04", None, "Technology"),        # Ecopro BM
+            TickerMembership("086520.KQ", "2007-12-03", None, "Technology"),        # Ecopro
         ]
         return members
 

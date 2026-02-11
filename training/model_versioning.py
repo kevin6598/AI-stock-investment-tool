@@ -288,7 +288,7 @@ class ModelRegistry:
         """Select best model using a composite robustness score.
 
         Composite score balances predictive power with robustness:
-          score = IC_mean + 0.5 * ICIR + 0.3 * Sharpe
+          score = IC_mean + 0.5 * ICIR + 0.3 * Sharpe + 0.1 * sentiment_ic
                   - 0.5 * overfitting_score - 0.3 * stress_drawdown
 
         Args:
@@ -312,11 +312,13 @@ class ModelRegistry:
             sharpe = m.get("mean_sharpe", 0.0)
             overfit = m.get("overfitting_score", 0.5)
             stress_dd = abs(m.get("stress_max_drawdown", 0.3))
+            sentiment_ic = m.get("sentiment_ic", 0.0)
 
             score = (
                 ic_mean
                 + 0.5 * icir
                 + 0.3 * sharpe
+                + 0.1 * sentiment_ic
                 - 0.5 * overfit
                 - 0.3 * stress_dd
             )

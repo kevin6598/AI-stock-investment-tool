@@ -81,6 +81,30 @@ export interface HealthResponse {
   uptime_seconds: number;
 }
 
+export interface Top10Stock {
+  rank: number;
+  ticker: string;
+  score: number;
+  direction: "UP" | "DOWN" | "HOLD";
+  p_up: number;
+  expected_return: number;
+  confidence: number;
+  risk_score: number;
+  sentiment_score: number;
+  allocation_weight: number;
+  reasons: string[];
+}
+
+export interface Top10Response {
+  market: string;
+  horizon: string;
+  stocks: Top10Stock[];
+  generated_at: string;
+  model_version: string | null;
+  total_candidates: number;
+  pass_rate: number;
+}
+
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${url}`, {
     headers: { "Content-Type": "application/json" },
@@ -121,5 +145,14 @@ export const api = {
 
   getDiagnostics(): Promise<any> {
     return fetchJSON("/api/v1/model/diagnostics");
+  },
+
+  getTop10(
+    market: string = "US",
+    horizon: string = "1M",
+    allocation: string = "risk_parity"
+  ): Promise<Top10Response> {
+    const params = new URLSearchParams({ horizon, allocation });
+    return fetchJSON(`/api/v1/portfolio/top10/${market}?${params}`);
   },
 };

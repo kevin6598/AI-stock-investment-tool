@@ -423,6 +423,8 @@ def compute_nlp_sentiment_features(
 
     Calls models.sentiment.get_sentiment_features() and expands the
     aggregated result into daily feature columns prefixed with ``nlp_``.
+    When DualSentimentEngine is available, also includes sentence embedding
+    features (dual_sentiment_score, sentence_similarity, sentence_pca_0..7).
 
     Falls back gracefully to zero-filled features if the sentiment
     module or its dependencies are unavailable.
@@ -433,7 +435,7 @@ def compute_nlp_sentiment_features(
         use_finbert: Whether to use FinBERT (requires ``transformers``).
 
     Returns:
-        DataFrame indexed by *dates* with 7 ``nlp_*`` columns.
+        DataFrame indexed by *dates* with ``nlp_*`` columns.
     """
     default_features = {
         "nlp_sentiment_mean": 0.0,
@@ -453,11 +455,23 @@ def compute_nlp_sentiment_features(
         "nlp_kw_value": 0.0,
         "nlp_kw_quality": 0.0,
         "nlp_kw_momentum": 0.0,
+        # Dual engine features
+        "nlp_dual_sentiment_score": 0.0,
+        "nlp_sentence_similarity": 0.0,
+        "nlp_sentence_pca_0": 0.0,
+        "nlp_sentence_pca_1": 0.0,
+        "nlp_sentence_pca_2": 0.0,
+        "nlp_sentence_pca_3": 0.0,
+        "nlp_sentence_pca_4": 0.0,
+        "nlp_sentence_pca_5": 0.0,
+        "nlp_sentence_pca_6": 0.0,
+        "nlp_sentence_pca_7": 0.0,
     }
 
     try:
-        from models.sentiment import get_extended_sentiment_features
-        raw = get_extended_sentiment_features(ticker)
+        from models.sentiment import DualSentimentEngine
+        engine = DualSentimentEngine(use_finbert=use_finbert)
+        raw = engine.score(ticker)
         features = {
             "nlp_sentiment_mean": raw.get("sentiment_mean", 0.0),
             "nlp_sentiment_weighted": raw.get("sentiment_weighted", 0.0),
@@ -476,12 +490,81 @@ def compute_nlp_sentiment_features(
             "nlp_kw_value": raw.get("kw_value", 0.0),
             "nlp_kw_quality": raw.get("kw_quality", 0.0),
             "nlp_kw_momentum": raw.get("kw_momentum", 0.0),
+            "nlp_dual_sentiment_score": raw.get("dual_sentiment_score", 0.0),
+            "nlp_sentence_similarity": raw.get("sentence_similarity", 0.0),
+            "nlp_sentence_pca_0": raw.get("sentence_pca_0", 0.0),
+            "nlp_sentence_pca_1": raw.get("sentence_pca_1", 0.0),
+            "nlp_sentence_pca_2": raw.get("sentence_pca_2", 0.0),
+            "nlp_sentence_pca_3": raw.get("sentence_pca_3", 0.0),
+            "nlp_sentence_pca_4": raw.get("sentence_pca_4", 0.0),
+            "nlp_sentence_pca_5": raw.get("sentence_pca_5", 0.0),
+            "nlp_sentence_pca_6": raw.get("sentence_pca_6", 0.0),
+            "nlp_sentence_pca_7": raw.get("sentence_pca_7", 0.0),
         }
     except Exception as e:
-        logger.debug(f"NLP sentiment unavailable for {ticker}: {e}")
+        logger.debug("NLP sentiment unavailable for %s: %s", ticker, e)
         features = default_features
 
     return pd.DataFrame(features, index=dates)
+
+
+def validate_sentiment_ic(
+    features_df: pd.DataFrame,
+    forward_returns: pd.Series,
+    ic_threshold: float = 0.01,
+) -> Tuple[pd.DataFrame, Dict[str, float]]:
+    """Validate NLP sentiment features via Spearman IC against forward returns.
+
+    If all sentiment features have IC < threshold, zero them out (fallback to
+    price-volume only features).
+
+    Args:
+        features_df: DataFrame containing nlp_* columns.
+        forward_returns: Series of forward return targets.
+        ic_threshold: Minimum IC to keep sentiment features.
+
+    Returns:
+        (features_df, ic_report) - possibly zeroed-out DataFrame and IC values.
+    """
+    nlp_cols = [c for c in features_df.columns if c.startswith("nlp_")]
+    if not nlp_cols:
+        return features_df, {}
+
+    ic_report = {}
+    any_pass = False
+    y_arr = forward_returns.values.astype(float)
+    mask_y = ~np.isnan(y_arr)
+
+    for col in nlp_cols:
+        x_arr = features_df[col].values.astype(float)
+        mask = mask_y & ~np.isnan(x_arr)
+        if mask.sum() < 20:
+            ic_report[col] = 0.0
+            continue
+        try:
+            ic, _ = stats.spearmanr(x_arr[mask], y_arr[mask])
+            ic_report[col] = float(ic) if not np.isnan(ic) else 0.0
+            if abs(ic_report[col]) >= ic_threshold:
+                any_pass = True
+        except Exception:
+            ic_report[col] = 0.0
+
+    if not any_pass:
+        logger.warning(
+            "All NLP sentiment features have IC < %.4f; zeroing out for PV-only fallback",
+            ic_threshold,
+        )
+        result = features_df.copy()
+        result[nlp_cols] = 0.0
+        return result, ic_report
+
+    logger.info(
+        "Sentiment IC validation: %d/%d features passed (threshold=%.4f)",
+        sum(1 for v in ic_report.values() if abs(v) >= ic_threshold),
+        len(nlp_cols),
+        ic_threshold,
+    )
+    return features_df, ic_report
 
 
 # ---------------------------------------------------------------------------

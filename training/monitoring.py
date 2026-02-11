@@ -450,6 +450,7 @@ class RetrainingMonitor:
         normal_sharpe: float = 0.0,
         stress_sharpe: float = 0.0,
         drift_alerts: Optional[List] = None,
+        sentiment_ic: Optional[float] = None,
     ) -> 'RetrainingDecision':
         """Evaluate whether retraining is needed.
 
@@ -460,6 +461,8 @@ class RetrainingMonitor:
             normal_sharpe: Sharpe ratio under normal conditions.
             stress_sharpe: Sharpe ratio under stress conditions.
             drift_alerts: List of DriftAlert objects.
+            sentiment_ic: Average IC of sentiment features. If below 0.005,
+                triggers retraining.
 
         Returns:
             RetrainingDecision with reasons and metrics.
@@ -498,6 +501,11 @@ class RetrainingMonitor:
             if high_alerts:
                 reasons.append("%d high-severity drift alerts" % len(high_alerts))
                 degradation["high_drift_alerts"] = float(len(high_alerts))
+
+        # Condition 6: Sentiment IC degradation
+        if sentiment_ic is not None and sentiment_ic < 0.005:
+            reasons.append("Sentiment IC=%.4f below 0.005" % sentiment_ic)
+            degradation["sentiment_degradation"] = 0.005 - sentiment_ic
 
         # Compute a rough composite score for current model health
         composite = current_ic * 10 - overfitting_score - degradation.get("max_psi", 0.0)

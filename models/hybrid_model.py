@@ -125,7 +125,7 @@ class HybridMultiModalNet(nn.Module):
         ti_group_dims: Optional[Dict[str, int]] = None,
         ti_embed_dim: int = 32,
         vae_latent_dim: int = 16,
-        sentiment_dim: int = 7,
+        sentiment_dim: int = 27,
         fusion_dim: int = 128,
         n_quantiles: int = 7,
         dropout: float = 0.2,

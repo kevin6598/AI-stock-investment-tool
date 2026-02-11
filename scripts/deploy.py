@@ -115,7 +115,54 @@ def validate_artifacts(artifact_dir: str) -> bool:
         logger.error("config.json missing 'model_type'")
         return False
 
+    # Validate sentiment model availability if config uses dual sentiment
+    if not validate_sentiment_model(config):
+        return False
+
+    # Check sentiment IC if metrics are present
+    metrics_path = os.path.join(artifact_dir, "metrics.json")
+    if os.path.exists(metrics_path):
+        try:
+            with open(metrics_path, "r") as f:
+                metrics = json.load(f)
+            sentiment_ic = metrics.get("sentiment_ic", None)
+            if sentiment_ic is not None and sentiment_ic < 0:
+                logger.error(
+                    "Sentiment IC is negative (%.4f) -- refusing deployment. "
+                    "Retrain with updated sentiment data.",
+                    sentiment_ic,
+                )
+                return False
+        except (json.JSONDecodeError, TypeError):
+            pass  # No metrics file or invalid -- skip check
+
     logger.info("Artifact validation passed")
+    return True
+
+
+def validate_sentiment_model(config: dict) -> bool:
+    """Validate that sentence-transformers is available if needed.
+
+    Args:
+        config: Model config dict from config.json.
+
+    Returns:
+        True if validation passes.
+    """
+    sentiment_config = config.get("sentiment_engine", {})
+    uses_sentence_model = sentiment_config.get("use_sentence_embedding", False)
+
+    if uses_sentence_model:
+        try:
+            import sentence_transformers  # noqa: F401
+            logger.info("sentence-transformers dependency verified")
+        except ImportError:
+            logger.error(
+                "Config requires sentence-transformers but it is not installed. "
+                "Install with: pip install sentence-transformers"
+            )
+            return False
+
     return True
 
 
