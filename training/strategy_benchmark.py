@@ -1835,13 +1835,18 @@ class BenchmarkEvaluator:
 
         fold_metrics = []  # type: List[FoldMetrics]
         fold_preds_list = []  # type: List[FoldPredictions]
+        n_folds = len(folds)
         t0 = time.time()
 
-        for fold in folds:
+        for fold_i, fold in enumerate(folds):
+            print("      fold %d/%d ..." % (fold_i + 1, n_folds),
+                  end="", flush=True)
+            fold_t0 = time.time()
             try:
                 train_df, val_df, test_df = validator.split_data(self.panel, fold)
 
                 if target_col not in train_df.columns:
+                    print(" skipped (no target)", flush=True)
                     continue
 
                 train_data = self._make_strategy_data(train_df, target_col)
@@ -1850,6 +1855,7 @@ class BenchmarkEvaluator:
                 test_data = self._make_strategy_data(test_df, target_col)
 
                 if len(test_data.y) < 50:
+                    print(" skipped (too few samples)", flush=True)
                     continue
 
                 # Train
@@ -1899,14 +1905,19 @@ class BenchmarkEvaluator:
                     pred_std=pred_std,
                     train_ic=train_ic,
                 ))
+                fold_elapsed = time.time() - fold_t0
                 logger.info(
                     "  Fold %s: IC=%.4f  Train_IC=%.4f  Sharpe=%.2f",
                     fold_idx_val,
                     ic_mean, train_ic, sharpe,
                 )
+                print(" IC=%.4f (%.1fs)" % (ic_mean, fold_elapsed),
+                      flush=True)
 
             except Exception as e:
+                fold_elapsed = time.time() - fold_t0
                 logger.warning("Fold failed for %s: %s", strategy.name, e)
+                print(" FAILED (%.1fs)" % fold_elapsed, flush=True)
                 continue
 
         train_time = time.time() - t0
@@ -2273,6 +2284,21 @@ class BenchmarkEvaluator:
         """
         results = []  # type: List[StrategyResult]
 
+        # Pre-compute total evaluations for progress tracking
+        total_evals = 0
+        for horizon_days in self.config.horizons:
+            target_col = "fwd_return_%dd" % horizon_days
+            if target_col not in self.panel.columns:
+                continue
+            for cls in strategy_classes:
+                sh = getattr(cls, "supported_horizons", None)
+                if sh is not None and horizon_days not in sh:
+                    continue
+                total_evals += 1
+
+        completed = 0
+        run_start = time.time()
+
         for horizon_days in self.config.horizons:
             target_col = "fwd_return_%dd" % horizon_days
 
@@ -2293,8 +2319,31 @@ class BenchmarkEvaluator:
                                 cls.name, horizon_days)
                     continue
 
+                completed += 1
                 strategy = cls()
-                logger.info("--- %s / %dD ---", strategy.name, horizon_days)
+
+                # Progress display
+                elapsed = time.time() - run_start
+                if completed > 1 and elapsed > 0:
+                    avg_per_eval = elapsed / (completed - 1)
+                    remaining = avg_per_eval * (total_evals - completed + 1)
+                    eta_min = remaining / 60.0
+                    eta_str = "ETA %.0fmin" % eta_min
+                else:
+                    eta_str = "ETA --"
+
+                progress_msg = (
+                    "[%d/%d] %s / %dD  (%.1fmin elapsed, %s)"
+                    % (completed, total_evals, strategy.name,
+                       horizon_days, elapsed / 60.0, eta_str)
+                )
+                logger.info("=" * 60)
+                logger.info("PROGRESS: %s", progress_msg)
+                logger.info("=" * 60)
+                print("\n>>> [%d/%d] Running: %s / %dD  |  elapsed %.1fmin  |  %s"
+                      % (completed, total_evals, strategy.name,
+                         horizon_days, elapsed / 60.0, eta_str),
+                      flush=True)
 
                 result = self.run_walk_forward(strategy, horizon_days, target_col)
 
@@ -2315,6 +2364,14 @@ class BenchmarkEvaluator:
                     result.composite, result.status,
                     result.param_count, result.train_time,
                 )
+                print("    Done: %s/%dD -> IC=%.4f Sharpe=%.2f [%s] (%.1fs)"
+                      % (result.name, horizon_days, result.ic_mean,
+                         result.sharpe, result.status, result.train_time),
+                      flush=True)
+
+        total_elapsed = time.time() - run_start
+        print("\n>>> All %d evaluations complete in %.1f min"
+              % (total_evals, total_elapsed / 60.0), flush=True)
 
         results.sort(key=lambda r: r.composite, reverse=True)
         return results
