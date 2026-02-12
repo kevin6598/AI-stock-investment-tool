@@ -682,7 +682,17 @@ class GatedHybridStrategy(StrategyModel):
 
     def get_diagnostics(self):
         if self._model and hasattr(self._model, "get_gate_stats"):
-            return {"gate_stats": self._model.get_gate_stats()}
+            stats_list = self._model.get_gate_stats()
+            if stats_list and isinstance(stats_list, list):
+                # Summarize per-epoch stats into a single dict
+                means = [s.get("gate_mean", 0.5) for s in stats_list if isinstance(s, dict)]
+                stds = [s.get("gate_std", 0.0) for s in stats_list if isinstance(s, dict)]
+                summary = {
+                    "gate_mean": float(np.mean(means)) if means else 0.5,
+                    "gate_std": float(np.mean(stds)) if stds else 0.0,
+                    "n_epochs": len(stats_list),
+                }
+                return {"gate_stats": summary}
         return {}
 
 
