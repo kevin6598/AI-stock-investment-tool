@@ -94,6 +94,8 @@ class Top10Engine:
         """
         self._predict_fn = predict_fn
         self._model_version = model_version
+        self._sentiment_model = None
+        self._sentiment_aggregator = None
 
     def _get_predict_fn(self):
         """Lazily resolve prediction function."""
@@ -135,11 +137,22 @@ class Top10Engine:
             return float(score)
 
         # Try to get from the ticker's extended sentiment features
+        # Cache the model/aggregator to avoid reloading per ticker
         ticker = _get_field(pred, "ticker", "")
         if ticker:
             try:
-                from models.sentiment import get_extended_sentiment_features
-                feat = get_extended_sentiment_features(ticker)
+                from models.sentiment import (
+                    get_extended_sentiment_features,
+                    SentimentModel, SentimentAggregator,
+                )
+                if self._sentiment_model is None:
+                    self._sentiment_model = SentimentModel(use_finbert=False)
+                    self._sentiment_aggregator = SentimentAggregator()
+                feat = get_extended_sentiment_features(
+                    ticker,
+                    model=self._sentiment_model,
+                    aggregator=self._sentiment_aggregator,
+                )
                 return feat.get("sentiment_weighted", 0.0)
             except Exception:
                 pass

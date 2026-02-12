@@ -336,6 +336,8 @@ class LSTMAttentionModel(BaseModel):
             X_padded = np.vstack([np.zeros((pad_len, X.shape[1])), X])
             if y is not None:
                 y_padded = np.concatenate([np.zeros(pad_len), y])
+            else:
+                y_padded = None
             n_samples = X_padded.shape[0]
         else:
             X_padded = X
