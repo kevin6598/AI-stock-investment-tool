@@ -71,6 +71,7 @@ class BenchmarkConfig:
             train_years=wf.get("train_years", 3),
             test_months=wf.get("test_months", 6),
             step_months=wf.get("step_months", 6),
+            val_months=wf.get("val_months", 3),
             embargo_days=wf.get("embargo_days", 5),
             max_epochs=d.get("max_epochs", 15),
             early_stop_patience=d.get("early_stop_patience", 3),
@@ -868,10 +869,26 @@ class BenchmarkEvaluator:
         else:
             dates = self.panel.index.unique().sort_values()
 
+        data_span_months = (dates[-1] - dates[0]).days / 30.44
+        train_min_months = self.config.train_years * 12
+
+        # Auto-adjust: reduce train_min_months if data span is too short
+        min_needed = train_min_months + self.config.val_months + self.config.test_months + 2
+        if data_span_months < min_needed:
+            # Leave room for val + test + embargo
+            overhead = self.config.val_months + self.config.test_months + 2
+            train_min_months = max(6, int(data_span_months - overhead))
+            logger.warning(
+                "Data span %.0f months < %.0f needed. "
+                "Auto-adjusted train_min_months: %d -> %d",
+                data_span_months, min_needed,
+                self.config.train_years * 12, train_min_months,
+            )
+
         wf_config = WalkForwardConfig(
             train_start=str(dates[0].date()),
             test_end=str(dates[-1].date()),
-            train_min_months=self.config.train_years * 12,
+            train_min_months=train_min_months,
             val_months=self.config.val_months,
             test_months=self.config.test_months,
             step_months=self.config.step_months,
@@ -881,6 +898,12 @@ class BenchmarkEvaluator:
 
         validator = WalkForwardValidator(wf_config)
         folds = validator.generate_folds(pd.DatetimeIndex(dates))
+        logger.info(
+            "  %s/%dD: %d folds (train>=%dmo, val=%dmo, test=%dmo, data=%.0fmo)",
+            strategy.name, horizon_days, len(folds),
+            train_min_months, self.config.val_months,
+            self.config.test_months, data_span_months,
+        )
 
         fold_metrics = []  # type: List[FoldMetrics]
         t0 = time.time()
