@@ -343,15 +343,9 @@ class LSTMAttentionModel(BaseModel):
             X_padded = X
             y_padded = y
 
-        X_seq = []
-        y_seq = []
-        for i in range(seq_len, n_samples):
-            X_seq.append(X_padded[i - seq_len:i])
-            if y_padded is not None:
-                y_seq.append(y_padded[i])
-
-        X_seq = np.array(X_seq, dtype=np.float32)
-        y_seq = np.array(y_seq, dtype=np.float32) if y is not None else None
+        idx = np.arange(seq_len)[None, :] + np.arange(n_samples - seq_len)[:, None]
+        X_seq = X_padded[idx].astype(np.float32)
+        y_seq = y_padded[seq_len:].astype(np.float32) if y is not None else None
         return X_seq, y_seq
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray,
@@ -835,13 +829,9 @@ class HybridMultiModalModel(BaseModel):
             if y is not None:
                 y = np.concatenate([np.zeros(pad_len), y])
             n = X.shape[0]
-        X_seq, y_seq = [], []
-        for i in range(seq_len, n):
-            X_seq.append(X[i - seq_len:i])
-            if y is not None:
-                y_seq.append(y[i])
-        X_seq = np.array(X_seq, dtype=np.float32)
-        y_seq = np.array(y_seq, dtype=np.float32) if y is not None else None
+        idx = np.arange(seq_len)[None, :] + np.arange(n - seq_len)[:, None]
+        X_seq = X[idx].astype(np.float32)
+        y_seq = y[seq_len:].astype(np.float32) if y is not None else None
         return X_seq, y_seq
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray,
@@ -1225,13 +1215,9 @@ class GatedHybridModel(BaseModel):
             if y is not None:
                 y = np.concatenate([np.zeros(pad_len), y])
             n = X.shape[0]
-        X_seq, y_seq = [], []
-        for i in range(seq_len, n):
-            X_seq.append(X[i - seq_len:i])
-            if y is not None:
-                y_seq.append(y[i])
-        X_seq = np.array(X_seq, dtype=np.float32)
-        y_seq = np.array(y_seq, dtype=np.float32) if y is not None else None
+        idx = np.arange(seq_len)[None, :] + np.arange(n - seq_len)[:, None]
+        X_seq = X[idx].astype(np.float32)
+        y_seq = y[seq_len:].astype(np.float32) if y is not None else None
         return X_seq, y_seq
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray,

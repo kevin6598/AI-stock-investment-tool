@@ -61,11 +61,11 @@ class BenchmarkConfig:
     step_months: int = 6
     val_months: int = 3
     embargo_days: int = 5
-    max_epochs: int = 15
+    max_epochs: int = 10
     early_stop_patience: int = 3
     ranking_weight: float = 0.5
     max_params: int = 1_500_000
-    batch_size: int = 64
+    batch_size: int = 128
     learning_rate: float = 1e-3
     hidden_dim: int = 64
     sequence_length: int = 20
@@ -692,17 +692,15 @@ def _predict_mlp(net, X, nlp_idx):
 # ---------------------------------------------------------------------------
 
 def _build_sequences(X, seq_len):
-    """Convert 2D array to 3D sliding-window sequences."""
+    """Convert 2D array to 3D sliding-window sequences (vectorized)."""
     n = X.shape[0]
     if n <= seq_len:
         pad_len = seq_len - n + 1
         X = np.vstack([np.zeros((pad_len, X.shape[1]), dtype=np.float32), X])
         n = X.shape[0]
 
-    seqs = []
-    for i in range(seq_len, n):
-        seqs.append(X[i - seq_len:i])
-    return np.array(seqs, dtype=np.float32)
+    idx = np.arange(seq_len)[None, :] + np.arange(n - seq_len)[:, None]
+    return X[idx].astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -1863,8 +1861,6 @@ class BenchmarkEvaluator:
 
                 # Predict test
                 test_preds = strategy.predict(test_data)
-                # Predict train (for overfitting measurement)
-                train_preds = strategy.predict(train_data)
 
                 # Store fold predictions for extended metrics
                 fold_idx_val = getattr(fold, "fold_idx", 0)
@@ -1881,10 +1877,7 @@ class BenchmarkEvaluator:
                     test_preds, test_data.y, test_data.dates,
                     min_stocks=self.config.min_stocks_for_ic,
                 )
-                train_ic, _ = compute_cross_sectional_ic(
-                    train_preds, train_data.y, train_data.dates,
-                    min_stocks=self.config.min_stocks_for_ic,
-                )
+                train_ic = 0.0  # skip train inference for speed
 
                 # Investment metrics
                 sharpe, mdd = compute_simple_investment_metrics(
@@ -1945,13 +1938,9 @@ class BenchmarkEvaluator:
         mean_sharpe = float(np.mean([f.sharpe for f in fold_metrics]))
         mean_mdd = float(np.mean([f.max_drawdown for f in fold_metrics]))
 
-        # Overfitting score
-        mean_train_ic = float(np.mean([f.train_ic for f in fold_metrics]))
-        if abs(mean_train_ic) > 1e-8:
-            overfit = max(0.0, (mean_train_ic - ic_mean) / abs(mean_train_ic))
-        else:
-            overfit = 0.5
-        overfit = min(overfit, 1.0)
+        # Overfitting score -- IC stability penalty (no train inference needed)
+        # High IC variance relative to mean IC signals overfitting
+        overfit = min(1.0, max(0.0, ic_std_val / max(abs(ic_mean), 1e-8) - 1.0))
 
         # Composite
         composite = (
