@@ -36,6 +36,7 @@ import math
 import time
 import json
 import os
+import pickle
 
 logger = logging.getLogger(__name__)
 
@@ -2262,16 +2263,24 @@ class BenchmarkEvaluator:
     def run_all(
         self,
         strategy_classes: List[type],
+        checkpoint_dir: Optional[str] = None,
     ) -> List[StrategyResult]:
-        """Run all strategies at all horizons.
+        """Run all strategies at all horizons with checkpoint/resume support.
 
         Args:
             strategy_classes: List of StrategyModel subclasses.
+            checkpoint_dir: Directory to save/load per-strategy checkpoints.
+                If provided, completed results are saved after each strategy
+                and loaded on resume so timed-out runs can continue.
 
         Returns:
             List of StrategyResult sorted by composite score (desc).
         """
         results = []  # type: List[StrategyResult]
+
+        # Set up checkpoint directory
+        if checkpoint_dir:
+            os.makedirs(checkpoint_dir, exist_ok=True)
 
         # Pre-compute total evaluations for progress tracking
         total_evals = 0
@@ -2285,7 +2294,18 @@ class BenchmarkEvaluator:
                     continue
                 total_evals += 1
 
-        completed = 0
+        # Load existing checkpoints
+        loaded_count = 0
+        if checkpoint_dir:
+            loaded_count = self._load_checkpoints(
+                results, checkpoint_dir, strategy_classes,
+            )
+            if loaded_count > 0:
+                print("\n>>> Resumed %d/%d evaluations from checkpoint"
+                      % (loaded_count, total_evals), flush=True)
+
+        completed = loaded_count
+        newly_computed = 0
         run_start = time.time()
 
         for horizon_days in self.config.horizons:
@@ -2308,14 +2328,27 @@ class BenchmarkEvaluator:
                                 cls.name, horizon_days)
                     continue
 
+                # Skip if already loaded from checkpoint
+                ckpt_key = self._checkpoint_key(cls.name, horizon_days)
+                if any(self._checkpoint_key(r.name, r.horizon_days) == ckpt_key
+                       for r in results):
+                    logger.info("Loaded from checkpoint: %s / %dD",
+                                cls.name, horizon_days)
+                    print(">>> [%d/%d] Loaded from checkpoint: %s / %dD"
+                          % (completed, total_evals, cls.name, horizon_days),
+                          flush=True)
+                    continue
+
                 completed += 1
+                newly_computed += 1
                 strategy = cls()
 
                 # Progress display
                 elapsed = time.time() - run_start
-                if completed > 1 and elapsed > 0:
-                    avg_per_eval = elapsed / (completed - 1)
-                    remaining = avg_per_eval * (total_evals - completed + 1)
+                if newly_computed > 1 and elapsed > 0:
+                    avg_per_eval = elapsed / (newly_computed - 1)
+                    remaining_new = total_evals - completed
+                    remaining = avg_per_eval * remaining_new
                     eta_min = remaining / 60.0
                     eta_str = "ETA %.0fmin" % eta_min
                 else:
@@ -2345,6 +2378,10 @@ class BenchmarkEvaluator:
 
                 results.append(result)
 
+                # Save checkpoint
+                if checkpoint_dir:
+                    self._save_checkpoint(result, checkpoint_dir)
+
                 logger.info(
                     "RESULT %s/%dD: IC=%.4f ICIR=%.2f Sharpe=%.2f "
                     "Composite=%.4f [%s] (%d params, %.1fs)",
@@ -2359,11 +2396,67 @@ class BenchmarkEvaluator:
                       flush=True)
 
         total_elapsed = time.time() - run_start
-        print("\n>>> All %d evaluations complete in %.1f min"
-              % (total_evals, total_elapsed / 60.0), flush=True)
+        print("\n>>> All %d evaluations complete in %.1f min "
+              "(%d from checkpoint, %d newly computed)"
+              % (total_evals, total_elapsed / 60.0,
+                 loaded_count, newly_computed), flush=True)
 
         results.sort(key=lambda r: r.composite, reverse=True)
         return results
+
+    # -- Checkpoint helpers --------------------------------------------------
+
+    @staticmethod
+    def _checkpoint_key(name: str, horizon_days: int) -> str:
+        """Stable key for a strategy-horizon pair."""
+        safe_name = name.replace(" ", "_").replace("/", "_")
+        return "%s_%dD" % (safe_name, horizon_days)
+
+    @staticmethod
+    def _save_checkpoint(result: StrategyResult, checkpoint_dir: str) -> None:
+        """Save a single StrategyResult to disk."""
+        key = BenchmarkEvaluator._checkpoint_key(result.name, result.horizon_days)
+        path = os.path.join(checkpoint_dir, "%s.pkl" % key)
+        try:
+            with open(path, "wb") as f:
+                pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
+            logger.info("Checkpoint saved: %s", path)
+        except Exception as e:
+            logger.warning("Checkpoint save failed for %s: %s", key, e)
+
+    @staticmethod
+    def _load_checkpoints(
+        results: List[StrategyResult],
+        checkpoint_dir: str,
+        strategy_classes: List[type],
+    ) -> int:
+        """Load completed checkpoints into results list.
+
+        Returns:
+            Number of checkpoints loaded.
+        """
+        if not os.path.isdir(checkpoint_dir):
+            return 0
+
+        loaded = 0
+        for fname in sorted(os.listdir(checkpoint_dir)):
+            if not fname.endswith(".pkl"):
+                continue
+            path = os.path.join(checkpoint_dir, fname)
+            try:
+                with open(path, "rb") as f:
+                    result = pickle.load(f)
+                if not isinstance(result, StrategyResult):
+                    logger.warning("Invalid checkpoint (not StrategyResult): %s",
+                                   fname)
+                    continue
+                results.append(result)
+                loaded += 1
+                logger.info("Checkpoint loaded: %s (IC=%.4f, %s)",
+                            fname, result.ic_mean, result.status)
+            except Exception as e:
+                logger.warning("Failed to load checkpoint %s: %s", fname, e)
+        return loaded
 
 
 # ---------------------------------------------------------------------------
