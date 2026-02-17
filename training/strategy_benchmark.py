@@ -1680,7 +1680,12 @@ class GradientBoostedTreeStrategy(StrategyModel):
 
     def num_parameters(self):
         if self._model and hasattr(self._model, "model") and self._model.model:
-            return self._model.model.num_trees() * 31  # approx
+            m = self._model.model
+            n_trees = getattr(m, "n_estimators_", getattr(m, "n_estimators", 0))
+            n_leaves = getattr(m, "n_leaves_", self._model.params.get("num_leaves", 31))
+            if isinstance(n_leaves, (list, np.ndarray)):
+                n_leaves = int(np.mean(n_leaves))
+            return n_trees * n_leaves  # approx leaf parameters
         return 0
 
 
