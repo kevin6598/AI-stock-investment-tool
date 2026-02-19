@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate v3 multi-market quant pipeline with all 14 gap-closure enhancements."""
+"""Generate v3 multi-market quant pipeline with 14 gap-closure enhancements + 5-axis dataset diversity."""
 import json, sys
 
 
@@ -210,6 +210,30 @@ class PipelineConfig:
     # --- 20. Memory ---
     use_float32: bool = True
     gc_every_n_candidates: int = 100
+
+    # --- 21. Data Module Flags ---
+    enable_liquidity_features: bool = True
+    enable_fundamental_features: bool = True
+    enable_macro_features: bool = True
+    enable_sector_features: bool = True
+    enable_sentiment_proxy: bool = False  # optional, off by default
+
+    # --- 22. Axis A: Liquidity ---
+    liquidity_dollar_vol_windows: List[int] = field(default_factory=lambda: [20, 60])
+    amihud_window: int = 60
+
+    # --- 23. Axis C: Macro ---
+    macro_tickers: Dict[str, str] = field(default_factory=lambda: {
+        "tnx": "^TNX", "irx": "^IRX", "vix": "^VIX",
+        "gold": "GC=F", "oil": "CL=F", "dxy": "DX-Y.NYB",
+    })
+    macro_veto_vix_multiple: float = 2.0
+
+    # --- 24. Axis B: Fundamentals ---
+    fundamental_fields: List[str] = field(default_factory=lambda: [
+        "marketCap", "trailingPE", "priceToBook",
+        "returnOnEquity", "returnOnAssets", "revenueGrowth", "earningsGrowth",
+    ])
 
     # --- Scoring weights ---
     w_stability: float = 0.25
@@ -497,6 +521,267 @@ for m in ohlcv_data:
     print("%s: %s | %d tickers | %s to %s" % (m,str(p.shape),len(tks),dts.min().date(),dts.max().date()))'''))
 
 # ============================================================
+# CELL — Fundamental + Sector Data Loading (Axis B + D)
+# ============================================================
+C.append(md('''\
+## 3a. Fundamental & Sector Data (Axes B + D)
+
+**Axis B** — Fundamentals: log_market_cap, PE, PB, ROE from yfinance / pykrx (cached).
+**Axis D** — Cross-Sectional: sector-relative 20d returns.'''))
+
+C.append(code('''\
+fundamental_cache = {}  # {market: {ticker: {field: value}}}
+sector_mean_returns = {}  # {market: {sector: mean_20d_return}}
+
+US_SECTOR_MAP = {
+    "AAPL":"Tech","MSFT":"Tech","GOOGL":"Tech","AMZN":"Consumer","NVDA":"Tech",
+    "META":"Tech","TSLA":"Consumer","BRK-B":"Financials","JPM":"Financials",
+    "JNJ":"Healthcare","V":"Financials","PG":"Consumer","UNH":"Healthcare",
+    "HD":"Consumer","MA":"Financials","DIS":"Consumer","BAC":"Financials",
+    "NFLX":"Consumer","ADBE":"Tech","CRM":"Tech","XOM":"Energy","VZ":"Telecom",
+    "KO":"Consumer","INTC":"Tech","PEP":"Consumer","ABT":"Healthcare",
+    "CSCO":"Tech","COST":"Consumer","MRK":"Healthcare","WMT":"Consumer",
+    "AVGO":"Tech","ACN":"Tech","CVX":"Energy","NKE":"Consumer","LLY":"Healthcare",
+    "MCD":"Consumer","QCOM":"Tech","UPS":"Industrials","BMY":"Healthcare",
+    "LIN":"Materials","NEE":"Utilities","ORCL":"Tech","RTX":"Industrials",
+    "HON":"Industrials","TXN":"Tech","AMD":"Tech","PYPL":"Tech",
+    "CMCSA":"Telecom","TMO":"Healthcare","DHR":"Healthcare",
+}
+
+for market in CFG.markets:
+    if market not in ohlcv_data:
+        continue
+    STEP = "fundamental_data_%s" % market
+    fund_path = os.path.join(CFG.data_dir(market), "fundamentals.parquet")
+
+    if tracker.is_completed(STEP) and os.path.exists(fund_path):
+        logger.info("[SKIP] %s" % STEP)
+        _fdf = pd.read_parquet(fund_path)
+        fundamental_cache[market] = {
+            tk: _fdf.loc[tk].to_dict() for tk in _fdf.index if tk in _fdf.index
+        }
+        continue
+
+    if not CFG.enable_fundamental_features:
+        fundamental_cache[market] = {}
+        tracker.mark_completed(STEP, {"skipped": True})
+        continue
+
+    logger.info("[RUN] %s" % STEP)
+    t0 = time.time()
+    reg = MARKET_REGISTRY[market]
+    panel = ohlcv_data[market]
+    tickers = panel.index.get_level_values(1).unique().tolist()
+    fund_rows = {}
+
+    if reg["data_source"] == "yfinance":
+        for i, tk in enumerate(tickers):
+            if (i + 1) % 10 == 0:
+                print("  Fundamental [%d/%d] %s" % (i + 1, len(tickers), tk))
+            try:
+                info = yf.Ticker(tk).info
+                row = {}
+                for fld in CFG.fundamental_fields:
+                    v = info.get(fld)
+                    row[fld] = float(v) if v is not None else np.nan
+                row["sector"] = info.get("sector", US_SECTOR_MAP.get(tk, "Other"))
+                fund_rows[tk] = row
+            except Exception as _e:
+                logger.debug("Fund fetch fail %s: %s" % (tk, str(_e)[:60]))
+                fund_rows[tk] = {fld: np.nan for fld in CFG.fundamental_fields}
+                fund_rows[tk]["sector"] = US_SECTOR_MAP.get(tk, "Other")
+            time.sleep(0.1)  # rate-limit
+    elif reg["data_source"] == "pykrx":
+        try:
+            from pykrx import stock as _pks
+            import datetime as _dt
+            ds = _dt.datetime.now().strftime("%Y%m%d")
+            fund_df = _pks.get_market_fundamental_by_ticker(ds, market=reg.get("pykrx_market", market))
+            if fund_df is not None and not fund_df.empty:
+                col_map = {}
+                for c in fund_df.columns:
+                    cl = c.strip()
+                    if cl in ("PER", "trailingPE"):
+                        col_map[c] = "trailingPE"
+                    elif cl in ("PBR", "priceToBook"):
+                        col_map[c] = "priceToBook"
+                    elif cl in ("DIV", "dividendYield"):
+                        col_map[c] = "dividendYield"
+                    elif cl in ("EPS",):
+                        col_map[c] = "EPS"
+                fund_df = fund_df.rename(columns=col_map)
+                for tk in tickers:
+                    if tk in fund_df.index:
+                        row = {}
+                        for fld in CFG.fundamental_fields:
+                            v = fund_df.loc[tk].get(fld, np.nan)
+                            row[fld] = float(v) if v is not None and not (isinstance(v, float) and np.isnan(v)) else np.nan
+                        row["sector"] = "KR_" + market
+                        fund_rows[tk] = row
+                    else:
+                        fund_rows[tk] = {fld: np.nan for fld in CFG.fundamental_fields}
+                        fund_rows[tk]["sector"] = "KR_" + market
+        except Exception as _e:
+            logger.warning("pykrx fundamental fetch failed: %s" % str(_e)[:80])
+            for tk in tickers:
+                fund_rows[tk] = {fld: np.nan for fld in CFG.fundamental_fields}
+                fund_rows[tk]["sector"] = "KR_" + market
+
+    fundamental_cache[market] = fund_rows
+    if fund_rows:
+        fdf = pd.DataFrame.from_dict(fund_rows, orient="index")
+        fdf.to_parquet(fund_path)
+
+    # Compute sector mean 20d returns for Axis D
+    if CFG.enable_sector_features and fund_rows:
+        ticker_sectors = {tk: fund_rows.get(tk, {}).get("sector", "Other") for tk in tickers}
+        sector_rets = {}
+        for tk in tickers:
+            try:
+                td = panel.loc[(slice(None), tk), :].droplevel(1)
+                r20 = td["close"].pct_change(20).iloc[-1] if len(td) > 20 else 0.0
+                sec = ticker_sectors.get(tk, "Other")
+                sector_rets.setdefault(sec, []).append(float(r20) if not np.isnan(r20) else 0.0)
+            except Exception:
+                pass
+        sector_mean_returns[market] = {sec: float(np.mean(vals)) for sec, vals in sector_rets.items()}
+
+    elapsed = time.time() - t0
+    tracker.mark_completed(STEP, {"n_tickers": len(fund_rows), "time": elapsed})
+    print("%s fundamentals: %d tickers (%.0fs)" % (market, len(fund_rows), elapsed))
+
+print("Fundamental cache:", {m: len(v) for m, v in fundamental_cache.items()})
+print("Sector mean returns:", {m: len(v) for m, v in sector_mean_returns.items()})'''))
+
+# ============================================================
+# CELL — Macro Data Loading (Axis C)
+# ============================================================
+C.append(md('''\
+## 3b. Macro Data (Axis C)
+
+Download 6 macro series: Treasury yields, VIX, Gold, Oil, DXY.
+Derived features: yield_curve_slope, vix_regime, commodity/DXY momentum.
+Used in **meta-model** and **macro veto** only (Tier 2 — no candidate generation).'''))
+
+C.append(code('''\
+macro_data = pd.DataFrame()
+STEP = "macro_data"
+macro_path = os.path.join(CFG.drive_root, "data", "macro.parquet")
+
+if tracker.is_completed(STEP) and os.path.exists(macro_path):
+    logger.info("[SKIP] %s" % STEP)
+    macro_data = pd.read_parquet(macro_path)
+elif not CFG.enable_macro_features:
+    logger.info("[SKIP] macro (disabled)")
+    tracker.mark_completed(STEP, {"skipped": True})
+else:
+    logger.info("[RUN] %s" % STEP)
+    t0 = time.time()
+    raw_macro = {}
+    for name, ticker in CFG.macro_tickers.items():
+        try:
+            df = yf.download(ticker, period=CFG.data_period, progress=False, auto_adjust=True)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            if not df.empty and "Close" in df.columns:
+                s = df["Close"].copy()
+                s.index = pd.to_datetime(s.index).tz_localize(None)
+                raw_macro[name] = s
+                logger.info("Macro %s: %d rows" % (name, len(s)))
+        except Exception as _e:
+            logger.warning("Macro download fail %s: %s" % (name, str(_e)[:60]))
+
+    if raw_macro:
+        macro_data = pd.DataFrame(raw_macro)
+        macro_data = macro_data.sort_index().ffill()
+
+        # Derived features
+        if "tnx" in macro_data.columns and "irx" in macro_data.columns:
+            macro_data["yield_curve_slope"] = macro_data["tnx"] - macro_data["irx"]
+            macro_data["yield_curve_inverted"] = (macro_data["yield_curve_slope"] < 0).astype(float)
+        else:
+            macro_data["yield_curve_slope"] = 0.0
+            macro_data["yield_curve_inverted"] = 0.0
+
+        if "vix" in macro_data.columns:
+            vix_median = macro_data["vix"].rolling(252, min_periods=60).median()
+            macro_data["vix_regime"] = macro_data["vix"] / vix_median.replace(0, np.nan)
+        else:
+            macro_data["vix_regime"] = 1.0
+
+        for asset in ["dxy", "gold", "oil"]:
+            if asset in macro_data.columns:
+                macro_data["%s_mom_60d" % asset] = macro_data[asset].pct_change(60)
+            else:
+                macro_data["%s_mom_60d" % asset] = 0.0
+
+        macro_data.to_parquet(macro_path)
+
+    elapsed = time.time() - t0
+    tracker.mark_completed(STEP, {"n_series": len(raw_macro), "time": elapsed})
+
+print("Macro data:", macro_data.shape if len(macro_data) > 0 else "empty")
+if len(macro_data) > 0:
+    print("  Columns:", list(macro_data.columns))
+    print("  Latest yield_curve_slope:", macro_data["yield_curve_slope"].iloc[-1] if "yield_curve_slope" in macro_data.columns else "N/A")
+    print("  Latest vix_regime:", macro_data["vix_regime"].iloc[-1] if "vix_regime" in macro_data.columns else "N/A")'''))
+
+# ============================================================
+# CELL — Sentiment Proxy (Axis E, optional)
+# ============================================================
+C.append(md('''\
+## 3c. Sentiment Proxy (Axis E — Optional)
+
+VIX term structure = VIX / VIX3M − 1.
+Positive = backwardation (fear). Used in **meta-model** only (Tier 2).'''))
+
+C.append(code('''\
+sentiment_data = pd.DataFrame()
+STEP = "sentiment_proxy_data"
+
+if tracker.is_completed(STEP):
+    sp = os.path.join(CFG.drive_root, "data", "sentiment_proxy.parquet")
+    if os.path.exists(sp):
+        sentiment_data = pd.read_parquet(sp)
+    logger.info("[SKIP] %s" % STEP)
+elif not CFG.enable_sentiment_proxy:
+    logger.info("[SKIP] sentiment proxy (disabled)")
+    tracker.mark_completed(STEP, {"skipped": True})
+else:
+    logger.info("[RUN] %s" % STEP)
+    t0 = time.time()
+    try:
+        vix3m = yf.download("^VIX3M", period=CFG.data_period, progress=False, auto_adjust=True)
+        if isinstance(vix3m.columns, pd.MultiIndex):
+            vix3m.columns = vix3m.columns.get_level_values(0)
+        if not vix3m.empty and "Close" in vix3m.columns:
+            vix3m_close = vix3m["Close"].copy()
+            vix3m_close.index = pd.to_datetime(vix3m_close.index).tz_localize(None)
+
+            if len(macro_data) > 0 and "vix" in macro_data.columns:
+                vix_close = macro_data["vix"]
+            else:
+                _vix_raw = yf.download("^VIX", period=CFG.data_period, progress=False, auto_adjust=True)
+                if isinstance(_vix_raw.columns, pd.MultiIndex):
+                    _vix_raw.columns = _vix_raw.columns.get_level_values(0)
+                vix_close = _vix_raw["Close"].copy()
+                vix_close.index = pd.to_datetime(vix_close.index).tz_localize(None)
+
+            aligned = pd.DataFrame({"vix": vix_close, "vix3m": vix3m_close}).ffill().dropna()
+            if len(aligned) > 0:
+                sentiment_data = pd.DataFrame(index=aligned.index)
+                sentiment_data["vix_term_structure"] = aligned["vix"] / aligned["vix3m"].replace(0, np.nan) - 1
+                sp = os.path.join(CFG.drive_root, "data", "sentiment_proxy.parquet")
+                sentiment_data.to_parquet(sp)
+    except Exception as _e:
+        logger.warning("Sentiment proxy failed: %s" % str(_e)[:80])
+
+    elapsed = time.time() - t0
+    tracker.mark_completed(STEP, {"n_rows": len(sentiment_data), "time": elapsed})
+
+print("Sentiment proxy:", sentiment_data.shape if len(sentiment_data) > 0 else "empty")'''))
+
+# ============================================================
 # CELL 14-16 — Feature Engine + Tri-state Labeling
 # ============================================================
 C.append(md('''\
@@ -561,6 +846,52 @@ def check_class_balance(labels):
 print("Feature functions + tri-state labeler defined.")'''))
 
 C.append(code('''\
+def compute_liquidity_features(ohlcv_df, cfg):
+    """Axis A: Liquidity features from existing OHLCV — zero new downloads.
+
+    Returns DataFrame with:
+      - log_dollar_vol_{w}d: log of rolling dollar volume
+      - amihud: Amihud illiquidity ratio (|return| / dollar_volume)
+      - vol_imbalance: (up_vol - down_vol) / total_vol rolling
+      - turnover_ratio: volume / rolling mean volume
+      - gap_freq: frequency of overnight gaps > 1%
+    """
+    close = ohlcv_df["close"]
+    volume = ohlcv_df["volume"]
+    feats = pd.DataFrame(index=ohlcv_df.index)
+
+    dollar_vol = close * volume
+    for w in cfg.liquidity_dollar_vol_windows:
+        rdv = dollar_vol.rolling(w, min_periods=max(1, w // 2)).mean()
+        feats["log_dollar_vol_%dd" % w] = np.log1p(rdv)
+
+    # Amihud illiquidity: mean(|ret| / dollar_vol) over window
+    abs_ret = close.pct_change().abs()
+    dv_safe = dollar_vol.replace(0, np.nan)
+    amihud_raw = abs_ret / dv_safe
+    feats["amihud"] = amihud_raw.rolling(cfg.amihud_window, min_periods=20).mean()
+
+    # Volume imbalance: (up_vol - down_vol) / total_vol, 20d rolling
+    ret = close.pct_change()
+    up_vol = volume.where(ret > 0, 0).rolling(20).sum()
+    dn_vol = volume.where(ret <= 0, 0).rolling(20).sum()
+    total = (up_vol + dn_vol).replace(0, np.nan)
+    feats["vol_imbalance"] = (up_vol - dn_vol) / total
+
+    # Turnover ratio: current volume / 60d mean volume
+    mean_vol = volume.rolling(60, min_periods=20).mean().replace(0, np.nan)
+    feats["turnover_ratio"] = volume / mean_vol
+
+    # Gap frequency: fraction of days with overnight gap > 1% in past 60 days
+    if "open" in ohlcv_df.columns:
+        gap = (ohlcv_df["open"] / close.shift(1) - 1).abs()
+        feats["gap_freq"] = (gap > 0.01).astype(float).rolling(60, min_periods=20).mean()
+
+    return feats
+
+print("Liquidity feature function defined.")'''))
+
+C.append(code('''\
 feature_panels = {}
 
 for market in CFG.markets:
@@ -603,7 +934,35 @@ for market in CFG.markets:
                 mom["market_relative_20d"] = s20 - ma
             vol = compute_volatility_features(close, CFG.volatility_windows)
             reg = regime_feats.reindex(close.index, method='ffill') if len(regime_feats)>0 else pd.DataFrame(index=close.index)
-            combined = pd.concat([mom, vol, reg], axis=1)
+
+            # --- Axis A: Liquidity features ---
+            liq = compute_liquidity_features(td, CFG) if CFG.enable_liquidity_features else pd.DataFrame(index=close.index)
+
+            # --- Axis B: Fundamental features ---
+            fund = pd.DataFrame(index=close.index)
+            if CFG.enable_fundamental_features:
+                # high_52w_pct: current price as % of 52-week high
+                high_52w = close.rolling(252, min_periods=60).max()
+                fund["high_52w_pct"] = close / high_52w.replace(0, np.nan)
+                # Static fundamentals from cache
+                fund_info = fundamental_cache.get(market, {}).get(ticker, {})
+                if fund_info:
+                    mc = fund_info.get("marketCap", np.nan)
+                    fund["log_market_cap"] = np.log1p(mc) if not (isinstance(mc, float) and np.isnan(mc)) else np.nan
+                    for fld in ["trailingPE", "priceToBook", "returnOnEquity"]:
+                        fund[fld] = fund_info.get(fld, np.nan)
+
+            # --- Axis D: Sector relative ---
+            sect = pd.DataFrame(index=close.index)
+            if CFG.enable_sector_features:
+                fund_info_s = fundamental_cache.get(market, {}).get(ticker, {})
+                ticker_sector = fund_info_s.get("sector", "Other") if fund_info_s else "Other"
+                sect_means = sector_mean_returns.get(market, {})
+                sect_mean = sect_means.get(ticker_sector, 0.0)
+                s20 = close.pct_change(20)
+                sect["sector_relative_20d"] = s20 - sect_mean
+
+            combined = pd.concat([mom, vol, reg, liq, fund, sect], axis=1)
 
             for fd in CFG.forward_days_list:
                 raw_fwd = close.pct_change(fd).shift(-fd)
@@ -1494,36 +1853,81 @@ else:
     else:
         from sklearn.ensemble import GradientBoostingClassifier
 
+        def _build_meta_features(ts_date):
+            """Build 12-dim meta-feature vector at a given timestamp.
+
+            [0-3] market: 20d mom, 60d mom, 20d vol, 60d vol
+            [4-8] macro: yield_curve_slope, vix_regime, dxy_mom_60d, gold_mom_60d, oil_mom_60d
+            [9]   sentiment: vix_term_structure
+            [10-11] reserved padding (zeros)
+            """
+            mf = [0.0] * 12
+            # Market features (original 4)
+            for _mkt_name in CFG.markets:
+                _mi = market_indices.get(_mkt_name, pd.DataFrame())
+                if "close" not in _mi.columns or _mi.empty:
+                    continue
+                _mc = _mi["close"]
+                _pre = _mc.loc[:ts_date]
+                if len(_pre) < 60:
+                    continue
+                mf[0] = float(_pre.pct_change(20).iloc[-1]) if len(_pre) > 20 else 0
+                mf[1] = float(_pre.pct_change(60).iloc[-1]) if len(_pre) > 60 else 0
+                mf[2] = float(_pre.pct_change().rolling(20).std().iloc[-1]) if len(_pre) > 20 else 0
+                mf[3] = float(_pre.pct_change().rolling(60).std().iloc[-1]) if len(_pre) > 60 else 0
+                break  # use first available market
+
+            # Macro features (5 new)
+            if len(macro_data) > 0:
+                _md = macro_data.loc[:ts_date]
+                if len(_md) > 0:
+                    last = _md.iloc[-1]
+                    mf[4] = float(last.get("yield_curve_slope", 0)) if not np.isnan(last.get("yield_curve_slope", 0)) else 0
+                    mf[5] = float(last.get("vix_regime", 1)) if not np.isnan(last.get("vix_regime", 1)) else 1
+                    mf[6] = float(last.get("dxy_mom_60d", 0)) if not np.isnan(last.get("dxy_mom_60d", 0)) else 0
+                    mf[7] = float(last.get("gold_mom_60d", 0)) if not np.isnan(last.get("gold_mom_60d", 0)) else 0
+                    mf[8] = float(last.get("oil_mom_60d", 0)) if not np.isnan(last.get("oil_mom_60d", 0)) else 0
+
+            # Sentiment feature (1 new)
+            if len(sentiment_data) > 0:
+                _sd = sentiment_data.loc[:ts_date]
+                if len(_sd) > 0:
+                    mf[9] = float(_sd["vix_term_structure"].iloc[-1]) if not np.isnan(_sd["vix_term_structure"].iloc[-1]) else 0
+
+            # [10-11] reserved padding = 0
+            return np.nan_to_num(mf).tolist()
+
         # Build training data: per-fold meta-features → success label
         sids = set(turnover_ok["strategy_id"])
         meta_X = []; meta_y = []
         for _, row in wf_results[wf_results["strategy_id"].isin(sids)].iterrows():
-            mkt = row.get("market","US")
-            ts = pd.Timestamp(row["test_start"]); te = pd.Timestamp(row["test_end"])
-            mi = market_indices.get(mkt, pd.DataFrame())
-            if "close" not in mi.columns or mi.empty: continue
-            mc = mi["close"]
-            # Meta-features: market mom, vol, recent trend
-            pre = mc.loc[:ts]
-            if len(pre)<60: continue
-            mf = [
-                float(pre.pct_change(20).iloc[-1]) if len(pre)>20 else 0,   # 20d mom
-                float(pre.pct_change(60).iloc[-1]) if len(pre)>60 else 0,   # 60d mom
-                float(pre.pct_change().rolling(20).std().iloc[-1]) if len(pre)>20 else 0,  # 20d vol
-                float(pre.pct_change().rolling(60).std().iloc[-1]) if len(pre)>60 else 0,  # 60d vol
-            ]
+            ts = pd.Timestamp(row["test_start"])
+            mf = _build_meta_features(ts)
+            # Check that at least the market features are available
+            if all(v == 0 for v in mf[:4]):
+                mkt = row.get("market","US")
+                mi = market_indices.get(mkt, pd.DataFrame())
+                if "close" not in mi.columns or mi.empty: continue
+                mc = mi["close"]; pre = mc.loc[:ts]
+                if len(pre)<60: continue
+                mf[0] = float(pre.pct_change(20).iloc[-1]) if len(pre)>20 else 0
+                mf[1] = float(pre.pct_change(60).iloc[-1]) if len(pre)>60 else 0
+                mf[2] = float(pre.pct_change().rolling(20).std().iloc[-1]) if len(pre)>20 else 0
+                mf[3] = float(pre.pct_change().rolling(60).std().iloc[-1]) if len(pre)>60 else 0
+                mf = np.nan_to_num(mf).tolist()
             meta_X.append(mf)
             meta_y.append(1 if row["mean_return"]>0 else 0)
 
         if len(meta_X) >= 30:
             MX = np.array(meta_X, dtype=np.float32); MY = np.array(meta_y)
             np.nan_to_num(MX, copy=False)
+            print("Meta-model input dim: %d features x %d samples" % (MX.shape[1], MX.shape[0]))
             # Time-based split (70/30)
             split = int(len(MX)*0.7)
             gb = GradientBoostingClassifier(n_estimators=50, max_depth=2, random_state=CFG.seed)
             gb.fit(MX[:split], MY[:split])
             test_acc = float((gb.predict(MX[split:])==MY[split:]).mean())
-            logger.info("Meta-model test accuracy: %.2f" % test_acc)
+            logger.info("Meta-model test accuracy: %.2f (12-dim features)" % test_acc)
 
             # Score each surviving strategy's average meta-score
             strat_meta = {}
@@ -1532,14 +1936,17 @@ else:
                 scores = []
                 for _, r in sg.iterrows():
                     mkt = r.get("market","US"); ts = pd.Timestamp(r["test_start"])
-                    mi = market_indices.get(mkt, pd.DataFrame())
-                    if "close" not in mi.columns: continue
-                    mc = mi["close"]; pre = mc.loc[:ts]
-                    if len(pre)<60: continue
-                    mf = [float(pre.pct_change(20).iloc[-1]) if len(pre)>20 else 0,
-                          float(pre.pct_change(60).iloc[-1]) if len(pre)>60 else 0,
-                          float(pre.pct_change().rolling(20).std().iloc[-1]) if len(pre)>20 else 0,
-                          float(pre.pct_change().rolling(60).std().iloc[-1]) if len(pre)>60 else 0]
+                    mf = _build_meta_features(ts)
+                    # Fallback: fill market features from per-market index
+                    if all(v == 0 for v in mf[:4]):
+                        mi = market_indices.get(mkt, pd.DataFrame())
+                        if "close" not in mi.columns: continue
+                        mc = mi["close"]; pre = mc.loc[:ts]
+                        if len(pre)<60: continue
+                        mf[0] = float(pre.pct_change(20).iloc[-1]) if len(pre)>20 else 0
+                        mf[1] = float(pre.pct_change(60).iloc[-1]) if len(pre)>60 else 0
+                        mf[2] = float(pre.pct_change().rolling(20).std().iloc[-1]) if len(pre)>20 else 0
+                        mf[3] = float(pre.pct_change().rolling(60).std().iloc[-1]) if len(pre)>60 else 0
                     mf = np.nan_to_num(mf).tolist()
                     scores.append(gb.predict_proba(np.array([mf]))[0][1])
                 strat_meta[sid] = float(np.mean(scores)) if scores else 0.5
@@ -1669,6 +2076,23 @@ else:
                 + CFG.w_precision*df["s_precision"] + CFG.w_lift*df["s_lift"]
                 + CFG.w_sample*df["s_sample"] - CFG.penalty_turnover*to_norm
             )
+
+            # --- Macro Veto: halve scores during extreme macro stress ---
+            if CFG.enable_macro_features and len(macro_data) > 0:
+                try:
+                    latest_macro = macro_data.iloc[-1]
+                    vr = latest_macro.get("vix_regime", 1.0)
+                    yc_inv = latest_macro.get("yield_curve_inverted", 0.0)
+                    if not np.isnan(vr) and not np.isnan(yc_inv):
+                        if vr > CFG.macro_veto_vix_multiple and yc_inv > 0.5:
+                            before_veto = df["composite"].mean()
+                            df["composite"] = df["composite"] * 0.5
+                            print("MACRO VETO: VIX regime=%.2f (>%.1fx), yield curve inverted -> composite halved (%.4f -> %.4f)" % (
+                                vr, CFG.macro_veto_vix_multiple, before_veto, df["composite"].mean()))
+                        else:
+                            print("Macro check: VIX regime=%.2f, yield_inverted=%s -> no veto" % (vr, bool(yc_inv > 0.5)))
+                except Exception as _e:
+                    logger.debug("Macro veto check error: %s" % str(_e)[:60])
 
             # Keep top N per market
             parts = []
@@ -1816,6 +2240,93 @@ C.append(md('''\
 │  • CVaR must improve vs single strategy     │
 └─────────────────────────────────────────────┘
 ```'''))
+
+# ============================================================
+# CELL — Ablation & Module Impact Analysis
+# ============================================================
+C.append(md('''\
+## 19b. Ablation & Module Impact Analysis
+
+Audit which data modules are active and their contribution to the feature set.
+Saves baseline on first run for future comparison.'''))
+
+C.append(code('''\
+print("="*70)
+print("MODULE IMPACT ANALYSIS")
+print("="*70)
+
+active_modules = {
+    "axis_a_liquidity": CFG.enable_liquidity_features,
+    "axis_b_fundamentals": CFG.enable_fundamental_features,
+    "axis_c_macro": CFG.enable_macro_features,
+    "axis_d_sectors": CFG.enable_sector_features,
+    "axis_e_sentiment": CFG.enable_sentiment_proxy,
+}
+print("\\nActive modules:")
+for mod, on in active_modules.items():
+    print("  %s: %s" % (mod, "ON" if on else "OFF"))
+
+# Count features by axis in the feature panels
+axis_counts = {"price_volume": 0, "liquidity": 0, "fundamental": 0, "sector": 0, "other": 0}
+sample_market = list(feature_panels.keys())[0] if feature_panels else None
+if sample_market:
+    fp = feature_panels[sample_market]
+    feat_cols = [c for c in fp.columns if not c.startswith("fwd_") and not c.startswith("label_") and not c.endswith("_decile")]
+    for col in feat_cols:
+        if any(col.startswith(p) for p in ["log_dollar_vol", "amihud", "vol_imbalance", "turnover_ratio", "gap_freq"]):
+            axis_counts["liquidity"] += 1
+        elif any(col.startswith(p) for p in ["high_52w_pct", "log_market_cap", "trailingPE", "priceToBook", "returnOnEquity"]):
+            axis_counts["fundamental"] += 1
+        elif col.startswith("sector_relative"):
+            axis_counts["sector"] += 1
+        elif any(col.startswith(p) for p in ["mom_", "vol_", "vol_change", "market_mom", "market_vol", "regime_", "market_relative"]):
+            axis_counts["price_volume"] += 1
+        else:
+            axis_counts["other"] += 1
+    print("\\nFeature count by axis (base features, excl. deciles):")
+    for axis, cnt in axis_counts.items():
+        print("  %-20s: %d" % (axis, cnt))
+    print("  %-20s: %d" % ("TOTAL", sum(axis_counts.values())))
+    print("  %-20s: %d" % ("+ decile versions", len([c for c in fp.columns if c.endswith("_decile")])))
+
+# Meta-model dimension check
+print("\\nMeta-model feature vector: 12 dimensions")
+print("  [0-3]  Market: 20d mom, 60d mom, 20d vol, 60d vol")
+print("  [4-8]  Macro: yield_curve_slope, vix_regime, dxy/gold/oil momentum")
+print("  [9]    Sentiment: vix_term_structure")
+print("  [10-11] Reserved padding")
+
+# Macro veto status
+if CFG.enable_macro_features and len(macro_data) > 0:
+    latest = macro_data.iloc[-1]
+    print("\\nLatest macro state:")
+    print("  yield_curve_slope: %.4f" % latest.get("yield_curve_slope", 0))
+    print("  yield_curve_inverted: %s" % bool(latest.get("yield_curve_inverted", 0) > 0.5))
+    print("  vix_regime: %.2f" % latest.get("vix_regime", 1))
+
+# Save/compare baseline
+baseline_path = os.path.join(CFG.drive_root, "ablation_baseline.json")
+current_report = {
+    "active_modules": active_modules,
+    "feature_counts": axis_counts,
+    "n_scored": len(scored),
+    "mean_composite": float(scored["composite"].mean()) if len(scored) > 0 else 0,
+    "mean_sharpe": float(scored["mean_sharpe"].mean()) if len(scored) > 0 and "mean_sharpe" in scored.columns else 0,
+}
+if os.path.exists(baseline_path):
+    with open(baseline_path) as f:
+        baseline = json.load(f)
+    print("\\nComparison vs baseline:")
+    for k in ["n_scored", "mean_composite", "mean_sharpe"]:
+        bv = baseline.get(k, 0); cv = current_report.get(k, 0)
+        delta = cv - bv
+        print("  %s: %.4f -> %.4f (%+.4f)" % (k, bv, cv, delta))
+else:
+    with open(baseline_path, "w") as f:
+        json.dump(current_report, f, indent=2)
+    print("\\nBaseline saved to %s (first run)" % baseline_path)
+
+print("="*70)'''))
 
 # ============================================================
 # CELL 50-52 — Dashboard + Report
@@ -1970,6 +2481,13 @@ if len(scored)>0:
                   "scored":len(scored)},
         "tuned_rules":tuned_rules, "portfolio":portfolio_results,
         "top_strategy":b["strategy_id"],
+        "active_modules": {
+            "axis_a_liquidity": CFG.enable_liquidity_features,
+            "axis_b_fundamentals": CFG.enable_fundamental_features,
+            "axis_c_macro": CFG.enable_macro_features,
+            "axis_d_sectors": CFG.enable_sector_features,
+            "axis_e_sentiment": CFG.enable_sentiment_proxy,
+        },
     }
     rp = os.path.join(CFG.drive_root, 'report_v3.json')
     with open(rp,'w') as f: json.dump(report, f, indent=2)
