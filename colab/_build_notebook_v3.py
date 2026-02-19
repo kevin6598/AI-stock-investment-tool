@@ -52,19 +52,19 @@ C.append(md('''\
 # CELL 1 — Pip install
 # ============================================================
 C.append(code('''\
-# Phase 1: upgrade numpy first, then everything else in one pass to avoid binary mismatch
-!pip install -q --upgrade numpy pandas scipy scikit-learn
-!pip install -q yfinance matplotlib pyarrow joblib pykrx finance-datareader statsmodels
+import os
 
-# --- Auto-restart runtime after install (runs only once) ---
-import importlib, sys
-try:
-    import numpy as np
-    np.zeros(1, dtype=np.float64)  # trigger binary check
-    print("numpy OK — no restart needed")
-except (ValueError, ImportError):
-    print("Binary mismatch detected — restarting runtime...")
-    import os; os.kill(os.getpid(), 9)'''))
+_RESTART_FLAG = "/tmp/_quant_v3_restarted"
+
+if not os.path.exists(_RESTART_FLAG):
+    # First run: install everything, then force restart
+    os.system("pip install -q --upgrade numpy pandas scipy scikit-learn")
+    os.system("pip install -q yfinance matplotlib pyarrow joblib pykrx finance-datareader statsmodels")
+    open(_RESTART_FLAG, "w").write("done")
+    print("Packages installed. Restarting runtime to pick up new binaries...")
+    os.kill(os.getpid(), 9)  # force kernel restart
+else:
+    print("Packages already installed, runtime already restarted. Continuing...")'''))
 
 # ============================================================
 # CELL 2 — Config header
