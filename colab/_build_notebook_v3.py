@@ -1358,7 +1358,8 @@ for market in CFG.markets:
         STEP = "cand_decile_%s_%s" % (market, ht)
         sp = os.path.join(CFG.candidates_dir(market), "decile_%s.parquet" % ht)
         if tracker.is_completed(STEP):
-            all_candidates_list.append(pd.read_parquet(sp)); continue
+            if os.path.exists(sp): all_candidates_list.append(pd.read_parquet(sp))
+            continue
 
         logger.info("[RUN] %s" % STEP); t0 = time.time()
         valid = fp.dropna(subset=[fwd_col]).copy()
@@ -1421,7 +1422,8 @@ for market in CFG.markets:
         STEP = "cand_tree_%s_%s" % (market, ht)
         sp = os.path.join(CFG.candidates_dir(market), "tree_%s.parquet" % ht)
         if tracker.is_completed(STEP):
-            all_candidates_list.append(pd.read_parquet(sp)); continue
+            if os.path.exists(sp): all_candidates_list.append(pd.read_parquet(sp))
+            continue
 
         logger.info("[RUN] %s" % STEP); t0 = time.time()
         valid = fp.dropna(subset=[fwd_col]+feat_cols).copy()
@@ -1481,7 +1483,8 @@ for market in CFG.markets:
         STEP = "cand_logistic_%s_%s" % (market, ht)
         sp = os.path.join(CFG.candidates_dir(market), "logistic_%s.parquet" % ht)
         if tracker.is_completed(STEP):
-            all_candidates_list.append(pd.read_parquet(sp)); continue
+            if os.path.exists(sp): all_candidates_list.append(pd.read_parquet(sp))
+            continue
 
         logger.info("[RUN] %s" % STEP); t0 = time.time()
         valid = fp.dropna(subset=[fwd_col]+feat_cols).copy()
@@ -1764,7 +1767,8 @@ for market in CFG.markets:
         STEP = "edge_%s_%s" % (market, ht)
         ep = os.path.join(CFG.evaluation_dir(market), "edge_%s.parquet"%ht)
         if tracker.is_completed(STEP):
-            all_edge_results.append(pd.read_parquet(ep)); continue
+            if os.path.exists(ep): all_edge_results.append(pd.read_parquet(ep))
+            continue
 
         logger.info("[RUN] %s" % STEP); t0 = time.time()
         valid = fp.dropna(subset=[fwd_col]+feat_cols).copy()
@@ -1832,7 +1836,8 @@ for market in CFG.markets:
         STEP = "wf_%s_%s" % (market, ht)
         wp = os.path.join(CFG.walkforward_dir(market), "wf_%s.parquet"%ht)
         if tracker.is_completed(STEP):
-            all_wf_results.append(pd.read_parquet(wp)); continue
+            if os.path.exists(wp): all_wf_results.append(pd.read_parquet(wp))
+            continue
 
         logger.info("[RUN] %s" % STEP); t0 = time.time()
         valid = fp.dropna(subset=[fwd_col]).copy()
@@ -1840,7 +1845,9 @@ for market in CFG.markets:
         if len(mh_edge)>200: top_ids = mh_edge.nlargest(200,"sharpe")["strategy_id"].tolist()
         elif len(mh_edge)>0: top_ids = mh_edge.nlargest(min(50,len(mh_edge)),"sharpe")["strategy_id"].tolist()
         else: top_ids = []
-        if not top_ids: tracker.mark_completed(STEP,{"n":0}); continue
+        if not top_ids:
+            pd.DataFrame(columns=_WF_COLS).to_parquet(wp)
+            tracker.mark_completed(STEP,{"n":0}); continue
 
         ad = valid.index.get_level_values(0).unique().sort_values()
         folds = []
