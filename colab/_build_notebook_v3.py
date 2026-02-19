@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate v3.1 multi-market quant pipeline with alpha decomposition, sector-neutral labeling, and risk-aware signal intelligence."""
+"""Generate v4 multi-strategy survivability pipeline with failure-aware intelligence."""
 import json, sys
 
 
@@ -24,29 +24,26 @@ C = []
 # CELL 0 — Header
 # ============================================================
 C.append(md('''\
-# Multi-Market Quantitative Research Pipeline — v3.1
-## Alpha Decomposition, Sector-Neutral Labeling & Risk-Aware Signal Intelligence
+# Multi-Market Quantitative Research Pipeline — v4
+## Multi-Strategy Survivability & Failure-Aware Intelligence
 
-**Production-grade** pipeline with 14 mandatory enhancement layers + 7 alpha/risk modules:
+**V4 enhancements** over v3.1: orthogonal strategy classes, portfolio diversification,
+failure-triggered allocation, market-specific adaptation, and governance outputs.
 
 | # | Enhancement | Purpose |
 |---|-------------|---------|
-| 1 | Tri-state labeling (+1/0/−1) | Teach abstention |
-| 2 | Conditional metrics | Precision(BUY), CVaR, coverage |
-| 3 | Strategy de-duplication | Remove hidden correlation |
-| 4 | Beta-neutral analysis | Strip market exposure |
-| 5 | Return distribution safety | Tail risk rejection |
-| 6 | Cost stress testing | Multi-scenario survival |
-| 7 | Regime robustness | Bull/bear/high-vol/low-vol |
-| 8 | Meta-model gate | Model self-awareness |
-| 9 | Signal diversity optimizer | Behavioural clustering |
-| 10 | Bayesian auto rule tuning | Data-driven thresholds |
-| 11 | Signal→Rule→Portfolio arch | Layered decision flow |
-| 12 | Portfolio-level validation | System, not strategy |
-| 13 | Colab automation | One-click re-run |
-| 14 | Pruning only | No expansion |
+| 1-14 | All v3.1 layers | Tri-state, conditional metrics, de-dup, beta-neutral, etc. |
+| 15 | Mean reversion strategies | Oversold z-score, Bollinger bands |
+| 16 | Volatility/shock strategies | Vol expansion, acceleration |
+| 17 | Cross-market rotation | Relative momentum/volatility |
+| 18 | Portfolio diversity optimizer | Greedy forward selection |
+| 19 | Meta-model v2 (30-dim) | Interaction effects, marginal CVaR |
+| 20 | Failure-triggered allocation | Core decay → capital shift |
+| 21 | Market-specific thresholds | KOSPI/KOSDAQ adaptation |
+| 22 | Trading governance report | WHEN/WHEN NOT/RISK/TRUST |
+| 23 | Feedback loop | Cross-run learning |
 
-**Target:** 20-50 strategies, Sharpe 1.0-1.8, explainable decisions.'''))
+**Target:** Multi-strategy portfolio, Sharpe 1.0-1.8, structural diversification.'''))
 
 # ============================================================
 # CELL 1 — Pip install
@@ -83,7 +80,7 @@ warnings.filterwarnings('ignore')
 
 @dataclass
 class PipelineConfig:
-    """Central configuration — v3 with 20+ parameter groups."""
+    """Central configuration — v4 with 39 parameter groups."""
 
     # --- 1. Markets ---
     markets: List[str] = field(default_factory=lambda: ["US", "KOSPI", "KOSDAQ"])
@@ -266,6 +263,54 @@ class PipelineConfig:
     mortality_sharpe_kill_threshold: float = 0.0
     mortality_consecutive_negative_folds: int = 3
 
+    # --- 32. Strategy Types (v4) ---
+    enable_mean_reversion: bool = True
+    enable_volatility_shock: bool = True
+    enable_cross_market_rotation: bool = True
+    enable_sn_candidates: bool = True
+
+    # --- 33. Mean Reversion ---
+    mr_zscore_windows: List[int] = field(default_factory=lambda: [10, 20, 40])
+    mr_holding_days: List[int] = field(default_factory=lambda: [5, 10])
+    mr_zscore_entry_threshold: float = 2.0
+    mr_vol_overshoot_multiple: float = 1.5
+
+    # --- 34. Volatility/Shock ---
+    vs_activation_ew_threshold: float = 0.6
+    vs_vol_expansion_windows: List[int] = field(default_factory=lambda: [5, 10, 20])
+    vs_holding_days: List[int] = field(default_factory=lambda: [5, 21])
+    vs_vol_spike_multiple: float = 2.0
+
+    # --- 35. Cross-Market Rotation ---
+    cmr_rebalance_days: int = 21
+    cmr_lookback_windows: List[int] = field(default_factory=lambda: [20, 60])
+
+    # --- 36. Market-Specific Thresholds ---
+    market_thresholds: Dict = field(default_factory=lambda: {
+        "US":     {"min_precision_buy": 0.60, "min_sharpe": 0.5, "max_turnover": 12.0, "min_stability": 0.5, "min_win_rate": 0.52},
+        "KOSPI":  {"min_precision_buy": 0.55, "min_sharpe": 0.4, "max_turnover": 15.0, "min_stability": 0.4, "min_win_rate": 0.50},
+        "KOSDAQ": {"min_precision_buy": 0.55, "min_sharpe": 0.3, "max_turnover": 18.0, "min_stability": 0.4, "min_win_rate": 0.50},
+    })
+
+    # --- 37. Meta-Model v2 ---
+    meta_v2_interaction_effects: bool = True
+    meta_v2_signal_diversity_penalty: float = 0.3
+    meta_v2_use_scipy_optimize: bool = True
+    meta_v2_bayes_n_calls: int = 50
+    meta_v2_marginal_cvar_weight: float = 0.2
+
+    # --- 38. Failure-Aware Allocation ---
+    enable_failure_allocation: bool = True
+    failure_confidence_threshold: float = 0.4
+    failure_capital_shift_pct: float = 30.0
+    failure_decay_lookback_folds: int = 3
+
+    # --- 39. Portfolio Diversification ---
+    enable_diversity_optimizer: bool = True
+    diversity_min_strategies: int = 3
+    diversity_max_correlation: float = 0.6
+    diversity_reward_opposite_convexity: float = 0.2
+
     # --- Scoring weights ---
     w_stability: float = 0.25
     w_sharpe: float = 0.25
@@ -295,10 +340,19 @@ class PipelineConfig:
 
 
 CFG = PipelineConfig()
-print("Config v3 created.  Root:", CFG.drive_root)
+
+def get_market_threshold(market, param, default=None):
+    """Get market-specific threshold, falling back to global CFG value."""
+    mkt_th = CFG.market_thresholds.get(market, {})
+    return mkt_th.get(param, getattr(CFG, param, default))
+
+print("Config v4 created.  Root:", CFG.drive_root)
 print("Markets:", CFG.markets, "| Horizons:", CFG.forward_days_list)
 print("Tri-state thresholds:", CFG.tristate_thresholds_pct)
-print("Cost stress scenarios:", CFG.cost_stress_scenarios)'''))
+print("Cost stress scenarios:", CFG.cost_stress_scenarios)
+print("V4 strategy types: MeanRev=%s VolShock=%s CMR=%s SN=%s" % (
+    CFG.enable_mean_reversion, CFG.enable_volatility_shock,
+    CFG.enable_cross_market_rotation, CFG.enable_sn_candidates))'''))
 
 # ============================================================
 # CELL 4-7 — Persistence (same as v2)
@@ -1182,6 +1236,148 @@ def compute_liquidity_features(ohlcv_df, cfg):
 
 print("Liquidity feature function defined.")'''))
 
+# ============================================================
+# CELL — Mean Reversion Feature Function (v4)
+# ============================================================
+C.append(code('''\
+def compute_mean_reversion_features(close, volume, cfg):
+    """Mean reversion features: z-scores, Bollinger %B, vol overshoot, RSI.
+
+    Returns DataFrame with:
+      - zscore_{w}d: (close - SMA) / rolling_std
+      - bollinger_pct_{w}d: position within Bollinger bands [0=lower, 1=upper]
+      - vol_overshoot_{w}d: recent vol / trailing vol
+      - rsi_14d: RSI continuous [0-100]
+      - mean_revert_signal: average z-score inverted
+    """
+    feats = pd.DataFrame(index=close.index)
+    ret = close.pct_change()
+
+    for w in cfg.mr_zscore_windows:
+        sma = close.rolling(w, min_periods=max(1, w // 2)).mean()
+        std = close.rolling(w, min_periods=max(1, w // 2)).std()
+        feats["zscore_%dd" % w] = (close - sma) / std.replace(0, np.nan)
+
+        # Bollinger %B: (close - lower) / (upper - lower)
+        upper = sma + 2 * std
+        lower = sma - 2 * std
+        band_width = (upper - lower).replace(0, np.nan)
+        feats["bollinger_pct_%dd" % w] = (close - lower) / band_width
+
+        # Vol overshoot: short vol / long vol
+        short_vol = ret.rolling(w, min_periods=max(1, w // 2)).std()
+        long_vol = ret.rolling(min(w * 3, 120), min_periods=w).std()
+        feats["vol_overshoot_%dd" % w] = short_vol / long_vol.replace(0, np.nan)
+
+    # RSI 14d
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0).rolling(14, min_periods=7).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=7).mean()
+    rs = gain / loss.replace(0, np.nan)
+    feats["rsi_14d"] = 100 - (100 / (1 + rs))
+
+    # Mean revert signal: average z-score inverted (negative z -> positive signal)
+    z_cols = [c for c in feats.columns if c.startswith("zscore_")]
+    if z_cols:
+        feats["mean_revert_signal"] = -feats[z_cols].mean(axis=1)
+
+    return feats
+
+print("Mean reversion feature function defined.")'''))
+
+# ============================================================
+# CELL — Volatility/Shock Feature Function (v4)
+# ============================================================
+C.append(code('''\
+def compute_volatility_shock_features(close, volume, mkt_close, cfg):
+    """Volatility/shock features: vol expansion, acceleration, volume shock.
+
+    Returns DataFrame with:
+      - vol_expansion_{w}d: short_vol / long_vol
+      - vol_acceleration: second derivative of 20d volatility
+      - volume_shock_{w}d: current volume / trailing volume mean
+      - realized_vs_implied_proxy: vol_20d / vol_60d
+      - drawdown_speed: 5-day change in drawdown from peak
+    """
+    feats = pd.DataFrame(index=close.index)
+    ret = close.pct_change()
+
+    for w in cfg.vs_vol_expansion_windows:
+        short_vol = ret.rolling(w, min_periods=max(1, w // 2)).std()
+        long_vol = ret.rolling(60, min_periods=20).std()
+        feats["vol_expansion_%dd" % w] = short_vol / long_vol.replace(0, np.nan)
+
+    # Vol acceleration: second derivative of 20d vol
+    vol_20 = ret.rolling(20, min_periods=10).std()
+    vol_diff = vol_20.diff()
+    feats["vol_acceleration"] = vol_diff.diff()
+
+    # Volume shock
+    for w in cfg.vs_vol_expansion_windows:
+        vol_mean = volume.rolling(max(w * 3, 60), min_periods=w).mean()
+        feats["volume_shock_%dd" % w] = volume / vol_mean.replace(0, np.nan)
+
+    # Realized vs implied proxy
+    vol_20d = ret.rolling(20, min_periods=10).std()
+    vol_60d = ret.rolling(60, min_periods=20).std()
+    feats["realized_vs_implied_proxy"] = vol_20d / vol_60d.replace(0, np.nan)
+
+    # Drawdown speed: 5-day change in drawdown from peak
+    peak = close.rolling(252, min_periods=60).max()
+    dd = (close - peak) / peak.replace(0, np.nan)
+    feats["drawdown_speed"] = dd.diff(5)
+
+    return feats
+
+print("Volatility/shock feature function defined.")'''))
+
+# ============================================================
+# CELL — Cross-Market Rotation Feature Function (v4)
+# ============================================================
+C.append(code('''\
+def compute_cross_market_rotation_features(market, market_indices_dict, cfg):
+    """Cross-market rotation features broadcast to all tickers.
+
+    Returns DataFrame with:
+      - cmr_relmom_{other}_{w}d: self market mom minus other market mom
+      - cmr_relvol_{other}_{w}d: self market vol / other market vol
+      - cmr_divergence_{other}: momentum divergence flag
+    """
+    self_idx = market_indices_dict.get(market, pd.DataFrame())
+    if "close" not in self_idx.columns or self_idx.empty:
+        return pd.DataFrame()
+
+    self_close = self_idx["close"]
+    feats = pd.DataFrame(index=self_close.index)
+
+    for other_mkt, other_idx in market_indices_dict.items():
+        if other_mkt == market:
+            continue
+        if "close" not in other_idx.columns or other_idx.empty:
+            continue
+        other_close = other_idx["close"].reindex(self_close.index, method="ffill")
+
+        for w in cfg.cmr_lookback_windows:
+            self_mom = self_close.pct_change(w)
+            other_mom = other_close.pct_change(w)
+            feats["cmr_relmom_%s_%dd" % (other_mkt.lower(), w)] = self_mom - other_mom
+
+            self_vol = self_close.pct_change().rolling(w, min_periods=max(1, w // 2)).std()
+            other_vol = other_close.pct_change().rolling(w, min_periods=max(1, w // 2)).std()
+            feats["cmr_relvol_%s_%dd" % (other_mkt.lower(), w)] = self_vol / other_vol.replace(0, np.nan)
+
+        # Divergence: one market up, other down over 20d
+        self_mom_20 = self_close.pct_change(20)
+        other_mom_20 = other_close.pct_change(20)
+        feats["cmr_divergence_%s" % other_mkt.lower()] = (
+            ((self_mom_20 > 0) & (other_mom_20 < 0)) |
+            ((self_mom_20 < 0) & (other_mom_20 > 0))
+        ).astype(float)
+
+    return feats
+
+print("Cross-market rotation feature function defined.")'''))
+
 C.append(code('''\
 feature_panels = {}
 
@@ -1260,7 +1456,13 @@ for market in CFG.markets:
                 else:
                     sect["sector_relative_20d"] = s20
 
-            combined = pd.concat([mom, vol, reg, liq, fund, sect], axis=1)
+            # --- V4: Mean Reversion features ---
+            mr_feats = compute_mean_reversion_features(close, td["volume"], CFG) if CFG.enable_mean_reversion else pd.DataFrame(index=close.index)
+
+            # --- V4: Volatility/Shock features ---
+            vs_feats = compute_volatility_shock_features(close, td["volume"], mkt_close, CFG) if CFG.enable_volatility_shock else pd.DataFrame(index=close.index)
+
+            combined = pd.concat([mom, vol, reg, liq, fund, sect, mr_feats, vs_feats], axis=1)
 
             for fd in CFG.forward_days_list:
                 raw_fwd = close.pct_change(fd).shift(-fd)
@@ -1274,7 +1476,13 @@ for market in CFG.markets:
                 combined["label_%dd" % fd] = compute_tristate_labels(excess, th_pct)
 
                 # Sector-neutral excess return and label
-                if CFG.enable_sector_neutral_labels:
+                # V4: Skip SN labels when market has trivial sectors (< 3 unique)
+                _unique_sectors = set()
+                _smr_check = sector_mean_returns.get(market, {})
+                if isinstance(_smr_check, dict) and "ticker_sectors" in _smr_check:
+                    _unique_sectors = set(_smr_check["ticker_sectors"].values())
+                _sn_ok = CFG.enable_sector_neutral_labels and len(_unique_sectors) >= 3
+                if _sn_ok:
                     smr = sector_mean_returns.get(market, {})
                     if isinstance(smr, dict) and "sector_median_fwd" in smr:
                         smf = smr["sector_median_fwd"].get(fd, pd.DataFrame())
@@ -1296,6 +1504,18 @@ for market in CFG.markets:
 
     if not all_features: continue
     fp = pd.concat(all_features).reset_index().set_index(["date","ticker"]).sort_index()
+
+    # --- V4: Add cross-market rotation features (market-level, broadcast) ---
+    if CFG.enable_cross_market_rotation and len(market_indices) > 1:
+        cmr_feats = compute_cross_market_rotation_features(market, market_indices, CFG)
+        if len(cmr_feats) > 0:
+            dates = fp.index.get_level_values(0)
+            for col in cmr_feats.columns:
+                cmr_aligned = cmr_feats[col].reindex(dates, method="ffill")
+                cmr_aligned.index = fp.index
+                fp[col] = cmr_aligned.values
+            logger.info("Added %d CMR features for %s" % (len(cmr_feats.columns), market))
+
     fwd_cols = [c for c in fp.columns if c.startswith("fwd_return_")]
     label_cols = [c for c in fp.columns if c.startswith("label_")]
     feat_cols = [c for c in fp.columns if c not in fwd_cols and c not in label_cols]
@@ -1350,7 +1570,7 @@ all_candidates_list = []
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and ("_sn_" not in c or CFG.enable_sn_candidates)])
     decile_cols = [c for c in fp.columns if c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
@@ -1413,7 +1633,7 @@ import pickle
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and ("_sn_" not in c or CFG.enable_sn_candidates)])
     feat_cols = [c for c in fp.columns if not c.startswith("fwd_") and not c.startswith("label_") and not c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
@@ -1474,7 +1694,7 @@ from sklearn.preprocessing import StandardScaler
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and ("_sn_" not in c or CFG.enable_sn_candidates)])
     feat_cols = [c for c in fp.columns if not c.startswith("fwd_") and not c.startswith("label_") and not c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
@@ -1531,6 +1751,211 @@ for market in CFG.markets:
         lc = pd.DataFrame(strats); lc.to_parquet(sp); all_candidates_list.append(lc)
         tracker.mark_completed(STEP, {"n":len(lc),"time":time.time()-t0})
         gc.collect()'''))
+
+C.append(code('''\
+# --- V4: Mean Reversion Candidate Generation ---
+if CFG.enable_mean_reversion:
+    for market in CFG.markets:
+        if market not in feature_panels: continue
+        fp = feature_panels[market]
+        mr_decile_cols = [c for c in fp.columns if c.endswith("_decile") and
+                          any(c.startswith(p) for p in ["zscore_", "bollinger_pct_", "vol_overshoot_", "mean_revert_signal_"])]
+        if not mr_decile_cols:
+            logger.info("No MR decile columns for %s, skipping MR candidates" % market)
+            continue
+
+        for horizon in CFG.mr_holding_days:
+            # Find matching forward return column
+            fwd_col = None
+            for fd in CFG.forward_days_list:
+                if fd == horizon or (horizon <= 10 and fd == 5) or (horizon > 10 and fd == 21):
+                    fwd_col = "fwd_return_%dd" % fd
+                    break
+            if fwd_col is None or fwd_col not in fp.columns:
+                fwd_col = "fwd_return_%dd" % CFG.forward_days_list[0]
+            if fwd_col not in fp.columns: continue
+            ht = fwd_col.replace("fwd_return_", "")
+
+            STEP = "cand_meanrev_%s_%s" % (market, ht)
+            sp = os.path.join(CFG.candidates_dir(market), "meanrev_%s.parquet" % ht)
+            if tracker.is_completed(STEP):
+                if os.path.exists(sp): all_candidates_list.append(pd.read_parquet(sp))
+                continue
+
+            logger.info("[RUN] %s" % STEP); t0 = time.time()
+            valid = fp.dropna(subset=[fwd_col]).copy()
+            if len(valid) < CFG.min_sample_size:
+                pd.DataFrame().to_parquet(sp); tracker.mark_completed(STEP, {"n": 0}); continue
+
+            n_bins = int(valid[mr_decile_cols[0]].dropna().max()) + 1 if mr_decile_cols else 10
+            cands = []
+            cap = CFG.max_candidates_total // 3
+
+            # Single oversold decile (low z-score/bollinger = oversold = buy for mean reversion)
+            for col in mr_decile_cols:
+                for dv in range(min(3, n_bins)):  # Low deciles = oversold
+                    mask = valid[col] == dv; nt = int(mask.sum())
+                    if nt < CFG.min_sample_size: continue
+                    ret = valid.loc[mask, fwd_col]
+                    mr = float(ret.mean())
+                    if mr <= 0: continue
+                    cands.append({
+                        "strategy_id": "%s_%s_meanrev_%s_d%d" % (market, ht, col.replace("_decile", ""), dv),
+                        "market": market, "horizon": ht, "type": "meanrev_single",
+                        "features": col, "condition": "== %d" % dv,
+                        "n_trades": nt, "mean_return": mr, "win_rate": float((ret > 0).mean())})
+                    if len(cands) >= cap: break
+                if len(cands) >= cap: break
+
+            # Combo: oversold z-score + high vol_overshoot
+            z_cols = [c for c in mr_decile_cols if "zscore" in c or "bollinger" in c]
+            v_cols = [c for c in mr_decile_cols if "vol_overshoot" in c]
+            for zc in z_cols[:3]:
+                for vc in v_cols[:3]:
+                    for zd in range(min(3, n_bins)):
+                        for vd in range(max(0, n_bins - 3), n_bins):
+                            if len(cands) >= cap: break
+                            mask = (valid[zc] == zd) & (valid[vc] == vd)
+                            nt = int(mask.sum())
+                            if nt < CFG.min_sample_size: continue
+                            ret = valid.loc[mask, fwd_col]; mr = float(ret.mean())
+                            if mr <= 0: continue
+                            cands.append({
+                                "strategy_id": "%s_%s_meanrev_%s_d%d_AND_%s_d%d" % (
+                                    market, ht, zc.replace("_decile", ""), zd, vc.replace("_decile", ""), vd),
+                                "market": market, "horizon": ht, "type": "meanrev_combo",
+                                "features": "%s, %s" % (zc, vc),
+                                "condition": "%s==%d AND %s==%d" % (zc, zd, vc, vd),
+                                "n_trades": nt, "mean_return": mr, "win_rate": float((ret > 0).mean())})
+
+            dc = pd.DataFrame(cands); dc.to_parquet(sp); all_candidates_list.append(dc)
+            tracker.mark_completed(STEP, {"n": len(dc), "time": time.time() - t0})
+            print("MR candidates %s/%s: %d" % (market, ht, len(dc)))
+            gc.collect()
+
+print("After MR: %d total candidates" % sum(len(d) for d in all_candidates_list))'''))
+
+C.append(code('''\
+# --- V4: Volatility/Shock Candidate Generation ---
+if CFG.enable_volatility_shock:
+    for market in CFG.markets:
+        if market not in feature_panels: continue
+        fp = feature_panels[market]
+        vs_decile_cols = [c for c in fp.columns if c.endswith("_decile") and
+                          any(c.startswith(p) for p in ["vol_expansion_", "vol_acceleration_",
+                                                         "volume_shock_", "drawdown_speed_"])]
+        if not vs_decile_cols:
+            logger.info("No VS decile columns for %s, skipping VS candidates" % market)
+            continue
+
+        for horizon in CFG.vs_holding_days:
+            fwd_col = None
+            for fd in CFG.forward_days_list:
+                if fd == horizon or (horizon <= 10 and fd == 5) or (horizon > 10 and fd == 21):
+                    fwd_col = "fwd_return_%dd" % fd
+                    break
+            if fwd_col is None or fwd_col not in fp.columns:
+                fwd_col = "fwd_return_%dd" % CFG.forward_days_list[0]
+            if fwd_col not in fp.columns: continue
+            ht = fwd_col.replace("fwd_return_", "")
+
+            STEP = "cand_volshock_%s_%s" % (market, ht)
+            sp = os.path.join(CFG.candidates_dir(market), "volshock_%s.parquet" % ht)
+            if tracker.is_completed(STEP):
+                if os.path.exists(sp): all_candidates_list.append(pd.read_parquet(sp))
+                continue
+
+            logger.info("[RUN] %s" % STEP); t0 = time.time()
+            valid = fp.dropna(subset=[fwd_col]).copy()
+            if len(valid) < CFG.min_sample_size:
+                pd.DataFrame().to_parquet(sp); tracker.mark_completed(STEP, {"n": 0}); continue
+
+            n_bins = int(valid[vs_decile_cols[0]].dropna().max()) + 1 if vs_decile_cols else 10
+            cands = []
+            cap = CFG.max_candidates_total // 3
+
+            # High deciles of vol_expansion/vol_acceleration (activate during stress)
+            for col in vs_decile_cols:
+                for dv in range(max(0, n_bins - 3), n_bins):
+                    mask = valid[col] == dv; nt = int(mask.sum())
+                    if nt < CFG.min_sample_size: continue
+                    ret = valid.loc[mask, fwd_col]
+                    mr = float(ret.mean())
+                    if mr <= 0: continue
+                    cands.append({
+                        "strategy_id": "%s_%s_volshock_%s_d%d" % (market, ht, col.replace("_decile", ""), dv),
+                        "market": market, "horizon": ht, "type": "volshock_single",
+                        "features": col, "condition": "== %d" % dv,
+                        "n_trades": nt, "mean_return": mr, "win_rate": float((ret > 0).mean())})
+                    if len(cands) >= cap: break
+                if len(cands) >= cap: break
+
+            dc = pd.DataFrame(cands); dc.to_parquet(sp); all_candidates_list.append(dc)
+            tracker.mark_completed(STEP, {"n": len(dc), "time": time.time() - t0})
+            print("VS candidates %s/%s: %d" % (market, ht, len(dc)))
+            gc.collect()
+
+print("After VS: %d total candidates" % sum(len(d) for d in all_candidates_list))'''))
+
+C.append(code('''\
+# --- V4: Cross-Market Rotation Candidate Generation ---
+if CFG.enable_cross_market_rotation:
+    for market in CFG.markets:
+        if market not in feature_panels: continue
+        fp = feature_panels[market]
+        cmr_decile_cols = [c for c in fp.columns if c.endswith("_decile") and c.startswith("cmr_")]
+        if not cmr_decile_cols:
+            logger.info("No CMR decile columns for %s, skipping CMR candidates" % market)
+            continue
+
+        # CMR uses rebalance_days as horizon
+        fwd_col = None
+        for fd in CFG.forward_days_list:
+            if fd >= CFG.cmr_rebalance_days:
+                fwd_col = "fwd_return_%dd" % fd
+                break
+        if fwd_col is None:
+            fwd_col = "fwd_return_%dd" % CFG.forward_days_list[-1]
+        if fwd_col not in fp.columns: continue
+        ht = fwd_col.replace("fwd_return_", "")
+
+        STEP = "cand_cmr_%s_%s" % (market, ht)
+        sp = os.path.join(CFG.candidates_dir(market), "cmr_%s.parquet" % ht)
+        if tracker.is_completed(STEP):
+            if os.path.exists(sp): all_candidates_list.append(pd.read_parquet(sp))
+            continue
+
+        logger.info("[RUN] %s" % STEP); t0 = time.time()
+        valid = fp.dropna(subset=[fwd_col]).copy()
+        if len(valid) < CFG.min_sample_size:
+            pd.DataFrame().to_parquet(sp); tracker.mark_completed(STEP, {"n": 0}); continue
+
+        n_bins = int(valid[cmr_decile_cols[0]].dropna().max()) + 1 if cmr_decile_cols else 10
+        cands = []
+        cap = CFG.max_candidates_total // 3
+
+        # Extreme deciles of relative momentum/volatility
+        for col in cmr_decile_cols:
+            for dv in list(range(min(2, n_bins))) + list(range(max(0, n_bins - 2), n_bins)):
+                mask = valid[col] == dv; nt = int(mask.sum())
+                if nt < CFG.min_sample_size: continue
+                ret = valid.loc[mask, fwd_col]
+                mr = float(ret.mean())
+                if mr <= 0: continue
+                cands.append({
+                    "strategy_id": "%s_%s_cmr_%s_d%d" % (market, ht, col.replace("_decile", ""), dv),
+                    "market": market, "horizon": ht, "type": "cmr_single",
+                    "features": col, "condition": "== %d" % dv,
+                    "n_trades": nt, "mean_return": mr, "win_rate": float((ret > 0).mean())})
+                if len(cands) >= cap: break
+            if len(cands) >= cap: break
+
+        dc = pd.DataFrame(cands); dc.to_parquet(sp); all_candidates_list.append(dc)
+        tracker.mark_completed(STEP, {"n": len(dc), "time": time.time() - t0})
+        print("CMR candidates %s/%s: %d" % (market, ht, len(dc)))
+        gc.collect()
+
+print("After CMR: %d total candidates" % sum(len(d) for d in all_candidates_list))'''))
 
 C.append(code('''\
 all_candidates = pd.concat(all_candidates_list, ignore_index=True) if all_candidates_list else pd.DataFrame()
@@ -1717,9 +2142,9 @@ def evaluate_strategy_edge_v3(returns, labels=None, horizon_days=21):
 
 def build_mask(data, stype, cand_row, sid, market, ht, feat_cols_list):
     """Build boolean mask for strategy on data."""
-    if stype == "single_decile":
+    if stype in ("single_decile", "meanrev_single", "volshock_single", "cmr_single"):
         return data[cand_row["features"]] == int(cand_row["condition"].split("== ")[1])
-    elif stype == "combo_decile":
+    elif stype in ("combo_decile", "meanrev_combo"):
         parts = cand_row["condition"].split(" AND ")
         ca, va = parts[0].split("=="); cb, vb = parts[1].split("==")
         return (data[ca.strip()]==int(va)) & (data[cb.strip()]==int(vb))
@@ -1758,7 +2183,7 @@ all_edge_results = []
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and ("_sn_" not in c or CFG.enable_sn_candidates)])
     feat_cols = [c for c in fp.columns if not c.startswith("fwd_") and not c.startswith("label_") and not c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
@@ -1827,7 +2252,7 @@ all_wf_results = []
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and ("_sn_" not in c or CFG.enable_sn_candidates)])
     feat_cols = [c for c in fp.columns if not c.startswith("fwd_") and not c.startswith("label_") and not c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
@@ -1975,16 +2400,22 @@ else:
             sdf["fdr_reject"] = rej
         else: sdf["fdr_reject"] = True
 
-        mask = (
-            (sdf["stability"]>=CFG.min_stability) &
-            (sdf["mean_sharpe"]>=CFG.min_sharpe) &
-            (sdf["mean_win_rate"]>=CFG.min_win_rate) &
-            (sdf["mean_precision_buy"]>=CFG.min_precision_buy) &
-            (sdf["wr_ci_low"]>=0.48) &
-            (sdf["fdr_reject"]==True)
-        )
+        # V4: Per-market overfitting thresholds
+        mask_parts = []
+        for _, row in sdf.iterrows():
+            mkt = row.get("market", "US")
+            ok = (
+                row["stability"] >= get_market_threshold(mkt, "min_stability") and
+                row["mean_sharpe"] >= get_market_threshold(mkt, "min_sharpe") and
+                row["mean_win_rate"] >= get_market_threshold(mkt, "min_win_rate") and
+                row["mean_precision_buy"] >= get_market_threshold(mkt, "min_precision_buy") and
+                row["wr_ci_low"] >= 0.48 and
+                row["fdr_reject"] == True
+            )
+            mask_parts.append(ok)
+        mask = pd.Series(mask_parts, index=sdf.index)
         filtered = sdf[mask].sort_values("mean_sharpe", ascending=False).copy()
-        print("Overfitting: %d -> %d" % (len(sdf), len(filtered)))
+        print("Overfitting: %d -> %d (market-specific thresholds)" % (len(sdf), len(filtered)))
         filtered.to_parquet(fp_ov)
         tracker.mark_completed(STEP, {"n":len(filtered),"time":time.time()-t0})
         gc.collect()
@@ -2205,6 +2636,106 @@ else:
 print("Deduped: %d" % len(deduped))'''))
 
 # ============================================================
+# CELL — Portfolio Diversification Optimizer (v4)
+# ============================================================
+C.append(md('''\
+## 12b. Portfolio Diversification Optimizer (v4)
+
+Greedy forward selection maximizing diversity score:
+1. Start with highest-Sharpe strategy
+2. Score = sharpe × (1 - avg_corr) + type_bonus + convexity_bonus
+3. Penalty if avg_corr > max_correlation threshold'''))
+
+C.append(code('''\
+STEP = "diversity_optimizer"
+do_path = os.path.join(CFG.global_eval_dir, "diversity_optimized.parquet")
+
+if tracker.is_completed(STEP):
+    deduped = pd.read_parquet(do_path); print("Loaded %d diversity-optimized" % len(deduped))
+elif not CFG.enable_diversity_optimizer or len(deduped) < CFG.diversity_min_strategies:
+    logger.info("[SKIP] diversity optimizer (disabled or too few strategies: %d)" % len(deduped))
+    tracker.mark_completed(STEP, {"n": len(deduped), "skipped": True})
+else:
+    logger.info("[RUN] %s" % STEP)
+    t0 = time.time()
+
+    # Build return correlation matrix from WF results
+    pivot = wf_results.pivot_table(values="mean_return", index="fold_idx",
+                                   columns="strategy_id", aggfunc="first")
+    sids = deduped["strategy_id"].tolist()
+    pivot = pivot[[c for c in pivot.columns if c in sids]].dropna(axis=1, how="all").fillna(0)
+
+    if pivot.shape[1] >= CFG.diversity_min_strategies:
+        corr_matrix = pivot.corr()
+
+        # Get strategy types for type bonus
+        type_map = deduped.set_index("strategy_id")["type"].to_dict() if "type" in deduped.columns else {}
+        sharpe_map = deduped.set_index("strategy_id")["mean_sharpe"].to_dict()
+
+        # Greedy forward selection
+        max_select = CFG.portfolio_max_strategies * len(CFG.markets)
+        available = [s for s in sids if s in corr_matrix.columns]
+        if not available:
+            logger.warning("No strategies in correlation matrix")
+        else:
+            # Start with highest Sharpe
+            available.sort(key=lambda s: sharpe_map.get(s, 0), reverse=True)
+            selected = [available[0]]
+            available = available[1:]
+            selected_types = {type_map.get(selected[0], "unknown")}
+
+            while available and len(selected) < max_select:
+                best_score = -np.inf
+                best_sid = None
+
+                for sid in available:
+                    s_sharpe = sharpe_map.get(sid, 0)
+                    s_type = type_map.get(sid, "unknown")
+
+                    # Average correlation with already selected
+                    corrs = [abs(corr_matrix.loc[sid, sel]) for sel in selected
+                             if sid in corr_matrix.index and sel in corr_matrix.columns]
+                    avg_corr = float(np.mean(corrs)) if corrs else 0
+
+                    # Type bonus: reward new strategy type
+                    type_bonus = 0.3 if s_type not in selected_types else 0
+
+                    # Convexity bonus: reward negative correlation
+                    neg_corrs = [corr_matrix.loc[sid, sel] for sel in selected
+                                 if sid in corr_matrix.index and sel in corr_matrix.columns]
+                    avg_raw_corr = float(np.mean(neg_corrs)) if neg_corrs else 0
+                    convexity_bonus = CFG.diversity_reward_opposite_convexity if avg_raw_corr < 0 else 0
+
+                    # Penalty for high correlation
+                    corr_penalty = 1.0
+                    if avg_corr > CFG.diversity_max_correlation:
+                        corr_penalty = CFG.meta_v2_signal_diversity_penalty
+
+                    score = s_sharpe * (1 - avg_corr) * corr_penalty + type_bonus + convexity_bonus
+
+                    if score > best_score:
+                        best_score = score
+                        best_sid = sid
+
+                if best_sid is None:
+                    break
+                selected.append(best_sid)
+                selected_types.add(type_map.get(best_sid, "unknown"))
+                available.remove(best_sid)
+
+            before = len(deduped)
+            deduped = deduped[deduped["strategy_id"].isin(selected)].copy()
+            print("Diversity optimizer: %d -> %d (types: %s)" % (before, len(deduped), selected_types))
+    else:
+        logger.info("Too few strategies in corr matrix for diversity optimization")
+
+    if len(deduped) > 0:
+        deduped.to_parquet(do_path)
+    tracker.mark_completed(STEP, {"n": len(deduped), "time": time.time() - t0})
+
+print("After diversity optimization: %d" % len(deduped))'''))
+
+# ============================================================
 # CELL 37-38 — Regime Robustness (Part 7)
 # ============================================================
 C.append(md('''\
@@ -2282,8 +2813,11 @@ else:
         turnover_ok = pd.DataFrame()
     else:
         before = len(regime_ok)
-        turnover_ok = regime_ok[regime_ok["mean_turnover"]<=CFG.max_turnover].copy()
-        print("Turnover: %d -> %d" % (before, len(turnover_ok)))
+        # V4: per-market turnover thresholds
+        turnover_mask = regime_ok.apply(
+            lambda r: r["mean_turnover"] <= get_market_threshold(r.get("market", "US"), "max_turnover"), axis=1)
+        turnover_ok = regime_ok[turnover_mask].copy()
+        print("Turnover: %d -> %d (market-specific)" % (before, len(turnover_ok)))
     if len(turnover_ok)>0: turnover_ok.to_parquet(to_path)
     tracker.mark_completed(STEP, {"n":len(turnover_ok)})
 
@@ -2322,7 +2856,7 @@ else:
         from sklearn.ensemble import GradientBoostingClassifier
 
         def _build_meta_features(ts_date):
-            """Build 20-dim meta-feature vector at a given timestamp.
+            """Build 30-dim meta-feature vector at a given timestamp (v4).
 
             [0-3]   Market: 20d mom, 60d mom, 20d vol, 60d vol
             [4-8]   Macro: yield_curve_slope, vix_regime, dxy/gold/oil momentum
@@ -2336,8 +2870,15 @@ else:
             [16]    Rolling Sharpe (mortality signal)
             [17]    Trade abstention EV score
             [18-19] Reserved padding (zeros)
+            [20]    Strategy type diversity (v4)
+            [21]    Avg correlation with portfolio (v4)
+            [22]    Marginal CVaR contribution proxy (v4)
+            [23]    Regime-conditional Sharpe (v4)
+            [24]    Shared failure mode indicator (v4)
+            [25]    Opposite convexity score (v4)
+            [26-29] Reserved (v4)
             """
-            mf = [0.0] * 20
+            mf = [0.0] * 30
             # [0-3] Market features
             for _mkt_name in CFG.markets:
                 _mi = market_indices.get(_mkt_name, pd.DataFrame())
@@ -2417,6 +2958,77 @@ else:
             mf[17] = float(len(meta_scored)) / max(1, float(len(turnover_ok))) if len(turnover_ok) > 0 else 1.0
 
             # [18-19] reserved padding = 0
+
+            # --- V4 Meta Features [20-29] ---
+            # [20] Strategy type diversity
+            if len(turnover_ok) > 0 and "type" in turnover_ok.columns:
+                n_types = turnover_ok["type"].nunique()
+                total = len(turnover_ok)
+                mf[20] = float(n_types) / max(1, total) if total > 0 else 0
+
+            # [21] Avg correlation with portfolio (from diversity optimizer)
+            if len(wf_results) > 0 and len(turnover_ok) > 0:
+                try:
+                    _piv = wf_results.pivot_table(values="mean_return", index="fold_idx",
+                                                   columns="strategy_id", aggfunc="first")
+                    _sids = turnover_ok["strategy_id"].tolist()
+                    _piv = _piv[[c for c in _piv.columns if c in _sids]].dropna(axis=1, how="all").fillna(0)
+                    if _piv.shape[1] >= 2:
+                        _corr = _piv.corr().values
+                        _n = len(_corr)
+                        _upper = _corr[np.triu_indices(_n, k=1)]
+                        mf[21] = float(np.nanmean(np.abs(_upper)))
+                except Exception:
+                    pass
+
+            # [22] Marginal CVaR contribution proxy
+            if len(wf_results) > 0 and len(turnover_ok) > 0:
+                try:
+                    _port_ret = wf_results[wf_results["strategy_id"].isin(turnover_ok["strategy_id"])].groupby("fold_idx")["mean_return"].mean()
+                    _so = np.sort(_port_ret.values)
+                    _nt = max(1, int(0.05 * len(_so)))
+                    mf[22] = float(_so[:_nt].mean()) if len(_so) > 0 else 0
+                except Exception:
+                    pass
+
+            # [23] Regime-conditional Sharpe: Sharpe in current VIX regime
+            if len(wf_results) > 0:
+                try:
+                    _recent_wf = wf_results.sort_values("fold_idx").groupby("strategy_id").tail(2)
+                    mf[23] = float(_recent_wf["sharpe"].mean())
+                except Exception:
+                    pass
+
+            # [24] Shared failure: fraction of strategies failing same folds
+            if len(wf_results) > 0 and len(turnover_ok) > 0:
+                try:
+                    _neg_folds = {}
+                    for _sid in turnover_ok["strategy_id"]:
+                        _sg = wf_results[wf_results["strategy_id"] == _sid]
+                        _neg_folds[_sid] = set(_sg[_sg["mean_return"] < 0]["fold_idx"])
+                    if _neg_folds:
+                        _all_neg = set()
+                        for _s in _neg_folds.values():
+                            _all_neg |= _s
+                        if _all_neg:
+                            _overlap = sum(len(s & _all_neg) for s in _neg_folds.values()) / max(1, len(_neg_folds) * len(_all_neg))
+                            mf[24] = float(_overlap)
+                except Exception:
+                    pass
+
+            # [25] Opposite convexity: avg performance in worst portfolio quintile
+            if len(wf_results) > 0 and len(turnover_ok) > 0:
+                try:
+                    _port_ret = wf_results[wf_results["strategy_id"].isin(turnover_ok["strategy_id"])].groupby("fold_idx")["mean_return"].mean()
+                    if len(_port_ret) >= 5:
+                        _worst_q = _port_ret.nsmallest(max(1, len(_port_ret) // 5))
+                        _worst_folds = set(_worst_q.index)
+                        _worst_perf = wf_results[wf_results["fold_idx"].isin(_worst_folds)]["mean_return"].mean()
+                        mf[25] = float(_worst_perf) if not np.isnan(_worst_perf) else 0
+                except Exception:
+                    pass
+
+            # [26-29] reserved = 0
             return np.nan_to_num(mf).tolist()
 
         # Build training data: per-fold meta-features → success label
@@ -2443,13 +3055,13 @@ else:
         if len(meta_X) >= 30:
             MX = np.array(meta_X, dtype=np.float32); MY = np.array(meta_y)
             np.nan_to_num(MX, copy=False)
-            print("Meta-model input dim: %d features x %d samples" % (MX.shape[1], MX.shape[0]))
+            print("Meta-model v2 input dim: %d features x %d samples" % (MX.shape[1], MX.shape[0]))
             # Time-based split (70/30)
             split = int(len(MX)*0.7)
             gb = GradientBoostingClassifier(n_estimators=50, max_depth=2, random_state=CFG.seed)
             gb.fit(MX[:split], MY[:split])
             test_acc = float((gb.predict(MX[split:])==MY[split:]).mean())
-            logger.info("Meta-model test accuracy: %.2f (20-dim features)" % test_acc)
+            logger.info("Meta-model v2 test accuracy: %.2f (30-dim features)" % test_acc)
 
             # Score each surviving strategy's average meta-score
             strat_meta = {}
@@ -2777,33 +3389,75 @@ else:
         best_ev = -999; best_params = None
         np.random.seed(CFG.seed)
 
-        for _ in range(CFG.n_bayes_iterations):
-            prec_th = np.random.uniform(0.50, 0.75)
-            turn_th = np.random.uniform(1.0, CFG.max_turnover)
-            regime_th = np.random.uniform(0.3, 0.9)
-
+        # Objective function for threshold optimization
+        def _tune_objective(params):
+            prec_th, turn_th, regime_th = params
             mask = (
-                (meta_scored["mean_precision_buy"]>=prec_th) &
-                (meta_scored["mean_turnover"]<=turn_th)
+                (meta_scored["mean_precision_buy"] >= prec_th) &
+                (meta_scored["mean_turnover"] <= turn_th)
             )
             if "regime_ratio" in meta_scored.columns:
-                mask = mask & (meta_scored["regime_ratio"]>=regime_th)
-
+                mask = mask & (meta_scored["regime_ratio"] >= regime_th)
             subset = meta_scored[mask]
-            if len(subset)<2: continue
-
+            if len(subset) < 2:
+                return 999.0  # infeasible
             sids = set(subset["strategy_id"])
             sw = wf_results[wf_results["strategy_id"].isin(sids)]
-            if sw.empty: continue
-
+            if sw.empty:
+                return 999.0
             port_ret = sw.groupby("fold_idx")["mean_return"].mean()
             ev = float(port_ret.mean())
             pr = float(subset["mean_precision_buy"].mean())
+            if pr < 0.6:
+                return 999.0  # constraint violation
 
-            if pr >= 0.6 and ev > best_ev:
-                best_ev = ev
-                best_params = {"precision_th":round(prec_th,3), "turnover_th":round(turn_th,2),
-                               "regime_th":round(regime_th,3), "ev":round(ev,6), "n_strats":len(subset)}
+            # Diversity bonus: reward unique strategy types
+            n_types = subset["type"].nunique() if "type" in subset.columns else 1
+            diversity_bonus = 0.01 * n_types
+
+            return -(ev + diversity_bonus)  # negative for minimization
+
+        if CFG.meta_v2_use_scipy_optimize:
+            try:
+                from scipy.optimize import minimize
+                bounds = [(0.50, 0.75), (1.0, CFG.max_turnover), (0.3, 0.9)]
+                for _ in range(CFG.meta_v2_bayes_n_calls):
+                    x0 = [np.random.uniform(b[0], b[1]) for b in bounds]
+                    res = minimize(_tune_objective, x0, method="Nelder-Mead",
+                                   options={"maxiter": 50, "xatol": 0.01, "fatol": 1e-6})
+                    if res.fun < 999 and -res.fun > best_ev:
+                        best_ev = -res.fun
+                        best_params = {
+                            "precision_th": round(float(res.x[0]), 3),
+                            "turnover_th": round(float(res.x[1]), 2),
+                            "regime_th": round(float(res.x[2]), 3),
+                            "ev": round(best_ev, 6),
+                            "n_strats": int(len(meta_scored[
+                                (meta_scored["mean_precision_buy"] >= res.x[0]) &
+                                (meta_scored["mean_turnover"] <= res.x[1])
+                            ])),
+                            "optimizer": "scipy_nelder_mead",
+                        }
+                print("scipy optimize: best EV=%.6f" % best_ev if best_ev > -999 else "scipy optimize: no feasible solution")
+            except ImportError:
+                logger.warning("scipy not available, falling back to random search")
+                CFG.meta_v2_use_scipy_optimize = False
+
+        if not CFG.meta_v2_use_scipy_optimize:
+            # Fallback: random search
+            for _ in range(CFG.n_bayes_iterations):
+                prec_th = np.random.uniform(0.50, 0.75)
+                turn_th = np.random.uniform(1.0, CFG.max_turnover)
+                regime_th = np.random.uniform(0.3, 0.9)
+                obj = _tune_objective([prec_th, turn_th, regime_th])
+                if obj < 999 and -obj > best_ev:
+                    best_ev = -obj
+                    best_params = {"precision_th": round(prec_th, 3), "turnover_th": round(turn_th, 2),
+                                   "regime_th": round(regime_th, 3), "ev": round(best_ev, 6),
+                                   "n_strats": int(len(meta_scored[
+                                       (meta_scored["mean_precision_buy"] >= prec_th) &
+                                       (meta_scored["mean_turnover"] <= turn_th)
+                                   ])), "optimizer": "random_search"}
 
         tuned_rules = best_params if best_params else {
             "precision_th": CFG.min_precision_buy, "turnover_th": CFG.max_turnover,
@@ -2937,6 +3591,102 @@ if len(scored)>0:
                   "mean_sharpe","mean_precision_buy","mean_turnover"]].head(20).to_string(index=False))'''))
 
 # ============================================================
+# CELL — Failure-Triggered Allocation (v4)
+# ============================================================
+C.append(md('''\
+## 17b. Failure-Triggered Allocation (v4)
+
+Detect core strategy decay and shift capital to complementary strategies:
+1. Top 3 = "core", rest = "complementary"
+2. Confidence = recent_sharpe / overall_sharpe
+3. If confidence < threshold → shift capital to negatively correlated complements'''))
+
+C.append(code('''\
+failure_allocation = {"mode": "normal", "adjustments": {}}
+STEP = "failure_allocation"
+fa_path = os.path.join(CFG.global_eval_dir, "failure_allocation.json")
+
+if tracker.is_completed(STEP):
+    if os.path.exists(fa_path):
+        with open(fa_path) as f: failure_allocation = json.load(f)
+    logger.info("[SKIP] %s" % STEP)
+elif not CFG.enable_failure_allocation or len(scored) < 4 or len(wf_results) == 0:
+    logger.info("[SKIP] failure allocation (disabled or too few strategies)")
+    tracker.mark_completed(STEP, {"skipped": True})
+else:
+    logger.info("[RUN] %s" % STEP)
+
+    # Identify core (top 3) and complementary strategies
+    core_ids = scored.head(3)["strategy_id"].tolist()
+    comp_ids = scored.iloc[3:]["strategy_id"].tolist()
+
+    # Build correlation matrix
+    pivot = wf_results.pivot_table(values="mean_return", index="fold_idx",
+                                   columns="strategy_id", aggfunc="first")
+    all_sids = core_ids + comp_ids
+    pivot = pivot[[c for c in pivot.columns if c in all_sids]].dropna(axis=1, how="all").fillna(0)
+    corr_matrix = pivot.corr() if pivot.shape[1] >= 2 else pd.DataFrame()
+
+    adjustments = {}
+    any_failure = False
+
+    for sid in core_ids:
+        sg = wf_results[wf_results["strategy_id"] == sid].sort_values("fold_idx")
+        if len(sg) < 2:
+            continue
+
+        overall_sharpe = float(sg["sharpe"].mean())
+        n_recent = min(CFG.failure_decay_lookback_folds, len(sg))
+        recent_sharpe = float(sg.tail(n_recent)["sharpe"].mean())
+
+        confidence = recent_sharpe / overall_sharpe if abs(overall_sharpe) > 1e-8 else 1.0
+
+        if confidence < CFG.failure_confidence_threshold:
+            any_failure = True
+            # Find complementary strategies negatively correlated with failing core
+            best_comp = None
+            best_neg_corr = 0
+            for comp_sid in comp_ids:
+                if sid in corr_matrix.columns and comp_sid in corr_matrix.columns:
+                    c = float(corr_matrix.loc[sid, comp_sid])
+                    if c < best_neg_corr:
+                        best_neg_corr = c
+                        best_comp = comp_sid
+
+            shift_pct = min(CFG.failure_capital_shift_pct, abs(best_neg_corr) * CFG.failure_capital_shift_pct) if best_comp else 0
+
+            adjustments[sid] = {
+                "action": "reduce",
+                "confidence": round(confidence, 3),
+                "shift_pct": round(shift_pct, 1),
+                "shift_to": best_comp,
+                "reason": "core decay (confidence=%.2f < %.2f)" % (confidence, CFG.failure_confidence_threshold),
+            }
+            if best_comp:
+                adjustments[best_comp] = {
+                    "action": "increase",
+                    "shift_pct": round(shift_pct, 1),
+                    "from_sid": sid,
+                    "reason": "complement to failing core (corr=%.2f)" % best_neg_corr,
+                }
+            print("FAILURE SHIFT: %s confidence=%.2f -> shift %.1f%% to %s" % (
+                sid[:30], confidence, shift_pct, best_comp or "none"))
+
+    failure_allocation = {
+        "mode": "failure_shift" if any_failure else "normal",
+        "adjustments": adjustments,
+    }
+
+    with open(fa_path, "w") as f:
+        json.dump(failure_allocation, f, indent=2)
+    tracker.mark_completed(STEP, {"mode": failure_allocation["mode"], "n_adjustments": len(adjustments)})
+
+print("Failure allocation mode:", failure_allocation["mode"])
+if failure_allocation["adjustments"]:
+    for sid, adj in failure_allocation["adjustments"].items():
+        print("  %s: %s (%.1f%%)" % (sid[:30], adj["action"], adj.get("shift_pct", 0)))'''))
+
+# ============================================================
 # CELL 47-48 — Portfolio Validation (Part 12)
 # ============================================================
 C.append(md('''\
@@ -3027,21 +3777,24 @@ print(json.dumps(portfolio_results, indent=2))'''))
 # CELL 49 — Signal → Rule → Portfolio Architecture (Part 11)
 # ============================================================
 C.append(md('''\
-## 19. Signal → Rule → Portfolio Architecture (Part 11)
+## 19. Signal → Rule → Portfolio Architecture (v4)
 
-**Veto Priority Hierarchy:**
+**Veto Priority Hierarchy (v4):**
 ```
-1. THEME CRASH HARD VETO (score > 0.7)     → removes strategies entirely
-2. MACRO VETO (VIX>2x + yield inverted)    → halves composite scores
-3. TRADE ABSTENTION (adjusted_ev < min)     → removes low-EV strategies
-4. META-MODEL GATE (20-dim, P(success))     → removes low meta-score
-5. SECTOR ALPHA GATE (rotation model)       → penalizes composite (×0.7)
-6. STRATEGY MORTALITY (rolling Sharpe < 0)  → kills degraded strategies
+1. THEME CRASH HARD VETO (score > 0.7)       → removes strategies entirely
+2. MACRO VETO (VIX > 2x + yield inverted)    → halves composite scores
+3. TRADE ABSTENTION (adjusted_ev < min)       → removes low-EV strategies
+4. META-MODEL v2 GATE (30-dim, interactions)  → removes low meta-score
+5. FAILURE ALLOCATION (core confidence < 0.4) → shifts capital to complements
+6. SECTOR ALPHA GATE (rotation model)         → penalizes composite (x0.7)
+7. STRATEGY MORTALITY (rolling Sharpe < 0)    → kills degraded strategies
+8. DIVERSITY GATE (max_correlation > 0.6)     → penalizes redundant strategies
 ```
 
 ```
 ┌─────────────────────────────────────────────┐
 │  Model Output (decile/tree/logistic probs)  │
+│  V4: + meanrev, volshock, CMR candidates    │
 │  Dual labels: absolute + sector-neutral     │
 └─────────────────┬───────────────────────────┘
                   ▼
@@ -3051,8 +3804,8 @@ C.append(md('''\
 └─────────────────┬───────────────────────────┘
                   ▼
 ┌─────────────────────────────────────────────┐
-│  Meta-Model Gate: P(success | market state) │
-│  20-dim features, if meta < th → NO TRADE   │
+│  Meta-Model v2: P(success | market state)   │
+│  30-dim features + interactions → NO TRADE  │
 └─────────────────┬───────────────────────────┘
                   ▼
 ┌─────────────────────────────────────────────┐
@@ -3061,22 +3814,23 @@ C.append(md('''\
 └─────────────────┬───────────────────────────┘
                   ▼
 ┌─────────────────────────────────────────────┐
-│  Rule Layer (data-tuned thresholds):        │
-│  • Precision(BUY) ≥ tuned threshold         │
+│  Rule Layer (data-tuned, scipy-optimized):  │
+│  • Market-specific precision/Sharpe/turnover│
 │  • CVaR ≤ 3× avg win                        │
 │  • Beta-neutral Sharpe check                │
 │  • Cost survival ≥ 2 scenarios              │
 │  • Regime ratio ≥ 70%                        │
-│  • Turnover ≤ max                            │
 │  • Sector alpha gate + Strategy mortality   │
 └─────────────────┬───────────────────────────┘
                   ▼
 ┌─────────────────────────────────────────────┐
-│  Portfolio Engine:                           │
-│  • Equal-weight allocation                   │
+│  Portfolio Engine (v4):                      │
+│  • Diversity optimizer (greedy selection)    │
+│  • Failure-triggered allocation              │
 │  • No strategy > 30% risk budget            │
-│  • Cross-market diversification             │
+│  • Cross-market + cross-type diversification│
 │  • CVaR must improve vs single strategy     │
+│  • Trading Governance Report                 │
 └─────────────────────────────────────────────┘
 ```'''))
 
@@ -3107,13 +3861,19 @@ active_modules = {
     "cross_market_consistency": CFG.enable_cross_market_consistency,
     "regime_adaptive_thresholds": CFG.enable_regime_adaptive_thresholds,
     "strategy_mortality": CFG.enable_strategy_mortality,
+    "v4_mean_reversion": CFG.enable_mean_reversion,
+    "v4_volatility_shock": CFG.enable_volatility_shock,
+    "v4_cross_market_rotation": CFG.enable_cross_market_rotation,
+    "v4_diversity_optimizer": CFG.enable_diversity_optimizer,
+    "v4_failure_allocation": CFG.enable_failure_allocation,
+    "v4_sn_candidates": CFG.enable_sn_candidates,
 }
 print("\\nActive modules:")
 for mod, on in active_modules.items():
     print("  %s: %s" % (mod, "ON" if on else "OFF"))
 
 # Count features by axis in the feature panels
-axis_counts = {"price_volume": 0, "liquidity": 0, "fundamental": 0, "sector": 0, "other": 0}
+axis_counts = {"price_volume": 0, "liquidity": 0, "fundamental": 0, "sector": 0, "mean_reversion": 0, "vol_shock": 0, "cross_market": 0, "other": 0}
 sample_market = list(feature_panels.keys())[0] if feature_panels else None
 if sample_market:
     fp = feature_panels[sample_market]
@@ -3125,6 +3885,12 @@ if sample_market:
             axis_counts["fundamental"] += 1
         elif col.startswith("sector_relative"):
             axis_counts["sector"] += 1
+        elif any(col.startswith(p) for p in ["zscore_", "bollinger_pct_", "vol_overshoot_", "rsi_", "mean_revert_"]):
+            axis_counts["mean_reversion"] += 1
+        elif any(col.startswith(p) for p in ["vol_expansion_", "vol_acceleration", "volume_shock_", "realized_vs_implied", "drawdown_speed"]):
+            axis_counts["vol_shock"] += 1
+        elif col.startswith("cmr_"):
+            axis_counts["cross_market"] += 1
         elif any(col.startswith(p) for p in ["mom_", "vol_", "vol_change", "market_mom", "market_vol", "regime_", "market_relative"]):
             axis_counts["price_volume"] += 1
         else:
@@ -3136,7 +3902,7 @@ if sample_market:
     print("  %-20s: %d" % ("+ decile versions", len([c for c in fp.columns if c.endswith("_decile")])))
 
 # Meta-model dimension check
-print("\\nMeta-model feature vector: 20 dimensions")
+print("\\nMeta-model v2 feature vector: 30 dimensions")
 print("  [0-3]   Market: 20d mom, 60d mom, 20d vol, 60d vol")
 print("  [4-8]   Macro: yield_curve_slope, vix_regime, dxy/gold/oil momentum")
 print("  [9]     Sentiment: vix_term_structure")
@@ -3149,6 +3915,13 @@ print("  [15]    Cross-market contagion flag")
 print("  [16]    Rolling Sharpe (mortality)")
 print("  [17]    Trade abstention EV")
 print("  [18-19] Reserved padding")
+print("  [20]    Strategy type diversity (v4)")
+print("  [21]    Avg portfolio correlation (v4)")
+print("  [22]    Marginal CVaR contribution (v4)")
+print("  [23]    Regime-conditional Sharpe (v4)")
+print("  [24]    Shared failure mode (v4)")
+print("  [25]    Opposite convexity score (v4)")
+print("  [26-29] Reserved (v4)")
 
 # Macro veto status
 if CFG.enable_macro_features and len(macro_data) > 0:
@@ -3181,6 +3954,122 @@ else:
     print("\\nBaseline saved to %s (first run)" % baseline_path)
 
 print("="*70)'''))
+
+# ============================================================
+# CELL — Trading Governance Report (v4)
+# ============================================================
+C.append(md('''\
+## 19c. Trading Governance Report (v4)
+
+Actionable output: WHEN TO TRADE, WHEN NOT TO TRADE, RISK SIZING, WHAT IS FAILING,
+and SYSTEM TRUST LEVEL.'''))
+
+C.append(code('''\
+print("=" * 70)
+print("TRADING GOVERNANCE REPORT (v4)")
+print("=" * 70)
+
+# 1. WHEN TO TRADE
+print("\\n--- WHEN TO TRADE ---")
+if len(scored) > 0:
+    for _, row in scored.iterrows():
+        ms = row.get("meta_score", 1.0)
+        if ms >= 0.7:
+            conf = "HIGH"
+        elif ms >= 0.5:
+            conf = "MEDIUM"
+        else:
+            conf = "LOW"
+        print("  [%s] %s | Sharpe=%.2f | Precision=%.0f%% | Composite=%.3f" % (
+            conf, row["strategy_id"][:40], row["mean_sharpe"],
+            row["mean_precision_buy"] * 100, row["composite"]))
+else:
+    print("  NO strategies survived. Do not trade.")
+
+# 2. WHEN NOT TO TRADE
+print("\\n--- WHEN NOT TO TRADE ---")
+active_vetoes = []
+if CFG.enable_macro_features and len(macro_data) > 0:
+    latest = macro_data.iloc[-1]
+    vr = latest.get("vix_regime", 1.0)
+    yci = latest.get("yield_curve_inverted", 0.0)
+    if not np.isnan(vr) and vr > CFG.macro_veto_vix_multiple:
+        active_vetoes.append("MACRO: VIX regime=%.2f (>%.1fx)" % (vr, CFG.macro_veto_vix_multiple))
+    if not np.isnan(yci) and yci > 0.5:
+        active_vetoes.append("MACRO: Yield curve inverted")
+if theme_vetoed_strategies:
+    active_vetoes.append("THEME CRASH: %d strategies vetoed" % len(theme_vetoed_strategies))
+if cross_market_flags:
+    for k, v in cross_market_flags.items():
+        if v.get("contagion", False):
+            active_vetoes.append("CONTAGION: %s" % k)
+if failure_allocation.get("mode") == "failure_shift":
+    active_vetoes.append("CORE DECAY: %d strategies shifting capital" % len(failure_allocation.get("adjustments", {})))
+if active_vetoes:
+    for v in active_vetoes:
+        print("  [VETO] %s" % v)
+else:
+    print("  No active vetoes.")
+
+# 3. RISK SIZING
+print("\\n--- RISK SIZING ---")
+n_strats = len(scored) if len(scored) > 0 else 0
+if n_strats > 0:
+    base_weight = 100.0 / n_strats
+    print("  Base: equal-weight %.1f%% per strategy (%d strategies)" % (base_weight, n_strats))
+    if failure_allocation.get("adjustments"):
+        print("  Failure adjustments active:")
+        for sid, adj in failure_allocation["adjustments"].items():
+            print("    %s: %s %.1f%%" % (sid[:30], adj["action"], adj.get("shift_pct", 0)))
+else:
+    print("  No strategies to allocate.")
+
+# 4. WHAT IS FAILING FIRST
+print("\\n--- WHAT IS FAILING FIRST ---")
+if 'mortality_killed' in dir() and mortality_killed:
+    print("  Mortality kills: %d strategies" % len(mortality_killed))
+    for mk in mortality_killed[:5]:
+        print("    - %s" % mk)
+if theme_vetoed_strategies:
+    print("  Theme vetoes: %d strategies" % len(theme_vetoed_strategies))
+if abstention_count > 0:
+    print("  Trade abstention: %d strategies removed" % abstention_count)
+if not (mortality_killed if 'mortality_killed' in dir() else []) and not theme_vetoed_strategies and abstention_count == 0:
+    print("  Nothing failing currently.")
+
+# 5. SYSTEM TRUST LEVEL
+print("\\n--- SYSTEM TRUST LEVEL ---")
+trust_score = 1.0
+trust_reasons = []
+if n_strats <= 1:
+    trust_score *= 0.6
+    trust_reasons.append("monoculture (%d strategy)" % n_strats)
+if active_vetoes:
+    trust_score *= 0.7
+    trust_reasons.append("%d active vetoes" % len(active_vetoes))
+if failure_allocation.get("mode") == "failure_shift":
+    trust_score *= 0.8
+    trust_reasons.append("failure_shift mode active")
+
+# Check strategy type diversity
+if len(scored) > 0 and "type" in scored.columns:
+    n_types = scored["type"].nunique()
+    if n_types <= 1:
+        trust_score *= 0.7
+        trust_reasons.append("single strategy type")
+    elif n_types >= 3:
+        trust_score = min(1.0, trust_score * 1.1)  # diversity bonus
+
+trust_level = "HIGH" if trust_score >= 0.7 else "MEDIUM" if trust_score >= 0.4 else "LOW"
+recommendation = "TRADE" if trust_score >= 0.7 else "REDUCE SIZE" if trust_score >= 0.4 else "DO NOT TRADE"
+
+print("  Trust Score: %.2f" % trust_score)
+print("  Trust Level: %s" % trust_level)
+if trust_reasons:
+    for r in trust_reasons:
+        print("    - %s" % r)
+print("  Recommendation: %s" % recommendation)
+print("=" * 70)'''))
 
 # ============================================================
 # CELL 50-52 — Dashboard + Report
@@ -3252,18 +4141,20 @@ else:
     # P5: Funnel chart (strategy count at each filter stage)
     ax5 = fig.add_subplot(gs[2,0])
     stages = ["Candidates","Edge","WF Top","Overfitting","Beta-neutral",
-              "Dist-safe","Cost-stress","Deduped","Regime","Turnover","Meta-gate",
-              "Theme veto","Abstention","Scored"]
+              "Dist-safe","Cost-stress","Deduped","Diversity","Regime","Turnover","Meta-gate",
+              "Theme veto","Abstention","Failure alloc","Scored"]
     _post_meta = len(meta_scored) + len(theme_vetoed_strategies) + abstention_count
     _post_veto = _post_meta - len(theme_vetoed_strategies)
     _post_abstain = _post_veto - abstention_count
+    _n_fa = len(failure_allocation.get("adjustments", {})) if "failure_allocation" in dir() else 0
     counts = [
         len(all_candidates), len(edge_results),
         wf_results["strategy_id"].nunique() if len(wf_results)>0 else 0,
         len(filtered), len(beta_filtered), len(dist_safe),
-        len(cost_survived), len(deduped), len(regime_ok),
+        len(cost_survived), len(deduped), len(deduped), len(regime_ok),
         len(turnover_ok), _post_meta,
         _post_veto, _post_abstain,
+        len(scored) + _n_fa,
         len(scored),
     ]
     ax5.barh(range(len(stages)), counts, color='steelblue', edgecolor='white')
@@ -3294,7 +4185,7 @@ else:
 
 C.append(code('''\
 print("="*70)
-print("PIPELINE v3 COMPLETE — POST-REPORT GAP CLOSURE")
+print("PIPELINE v4 COMPLETE — Multi-Strategy Survivability & Failure-Aware Intelligence")
 print("="*70)
 tracker.summary()
 
@@ -3331,8 +4222,11 @@ if len(scored)>0:
     # Count SN strategies
     _sn_strats = [s for s in scored["strategy_id"] if "_sn_" in s] if len(scored) > 0 else []
 
+    # V4: Strategy type distribution
+    _type_dist = scored["type"].value_counts().to_dict() if len(scored) > 0 and "type" in scored.columns else {}
+
     report = {
-        "version":"v3.1", "markets":CFG.markets, "horizons":CFG.forward_days_list,
+        "version":"v4", "markets":CFG.markets, "horizons":CFG.forward_days_list,
         "tri_state_thresholds":CFG.tristate_thresholds_pct,
         "cost_stress_scenarios":[list(s) for s in CFG.cost_stress_scenarios],
         "funnel":{"candidates":len(all_candidates),"edge":len(edge_results),
@@ -3377,8 +4271,26 @@ if len(scored)>0:
             "killed": mortality_killed[:20] if 'mortality_killed' in dir() else [],
             "n_killed": len(mortality_killed) if 'mortality_killed' in dir() else 0,
         },
+        "governance": {
+            "trust_score": round(trust_score, 3),
+            "trust_level": trust_level,
+            "active_vetoes": active_vetoes,
+            "failure_mode": failure_allocation.get("mode", "normal"),
+            "failing_first": {
+                "mortality_kills": len(mortality_killed) if 'mortality_killed' in dir() else 0,
+                "theme_vetoes": len(theme_vetoed_strategies),
+                "abstentions": abstention_count,
+            },
+            "recommendation": recommendation,
+        },
+        "strategy_diversity": {
+            "n_types": len(_type_dist),
+            "type_distribution": _type_dist,
+            "n_strategies": len(scored),
+        },
+        "failure_allocation": failure_allocation,
     }
-    rp = os.path.join(CFG.drive_root, 'report_v3.json')
+    rp = os.path.join(CFG.drive_root, 'report_v4.json')
     with open(rp,'w') as f: json.dump(report, f, indent=2)
     print("\\nReport:", rp)
 else:
@@ -3386,6 +4298,89 @@ else:
     print("This is a VALID outcome — better than false positives.")
 print("\\n"+"="*70)'''))
 
+
+# ============================================================
+# CELL — Feedback Loop Integration (v4)
+# ============================================================
+C.append(md('''\
+## 21. Feedback Loop (v4)
+
+Saves current run state and compares with previous runs.
+Detects degradation, overfitting drift, and strategy stability.'''))
+
+C.append(code('''\
+STEP = "feedback_loop"
+fb_path = os.path.join(CFG.drive_root, "feedback_state.json")
+
+if tracker.is_completed(STEP):
+    logger.info("[SKIP] %s" % STEP)
+else:
+    logger.info("[RUN] %s" % STEP)
+
+    # Current state
+    current_state = {
+        "n_scored": len(scored),
+        "mean_composite": float(scored["composite"].mean()) if len(scored) > 0 else 0,
+        "mean_sharpe": float(scored["mean_sharpe"].mean()) if len(scored) > 0 and "mean_sharpe" in scored.columns else 0,
+        "strategy_types": list(scored["type"].unique()) if len(scored) > 0 and "type" in scored.columns else [],
+        "markets_represented": list(scored["market"].unique()) if len(scored) > 0 and "market" in scored.columns else [],
+        "adapted_thresholds": adapted_thresholds,
+        "failure_allocation_mode": failure_allocation.get("mode", "normal"),
+        "active_vetoes": active_vetoes if "active_vetoes" in dir() else [],
+        "trust_score": trust_score if "trust_score" in dir() else 1.0,
+    }
+
+    # Compare with previous state
+    if os.path.exists(fb_path):
+        with open(fb_path) as f:
+            prev_state = json.load(f)
+
+        print("\\n--- FEEDBACK LOOP: Cross-Run Comparison ---")
+
+        # All strategies died
+        if current_state["n_scored"] == 0 and prev_state.get("n_scored", 0) > 0:
+            print("  [WARNING] All strategies died! Previous run had %d." % prev_state["n_scored"])
+            print("  [RECOMMEND] Consider relaxing thresholds (precision, Sharpe, turnover).")
+
+        # Sharpe degraded >30%
+        prev_sharpe = prev_state.get("mean_sharpe", 0)
+        curr_sharpe = current_state["mean_sharpe"]
+        if prev_sharpe > 0 and curr_sharpe < prev_sharpe * 0.7:
+            print("  [WARNING] Sharpe degraded %.0f%%: %.3f -> %.3f" % (
+                (1 - curr_sharpe / prev_sharpe) * 100, prev_sharpe, curr_sharpe))
+            print("  [RECOMMEND] Investigate regime change or strategy decay.")
+
+        # Strategy count increased >50%
+        prev_n = prev_state.get("n_scored", 0)
+        if prev_n > 0 and current_state["n_scored"] > prev_n * 1.5:
+            print("  [WARNING] Strategy count increased %.0f%%: %d -> %d" % (
+                (current_state["n_scored"] / prev_n - 1) * 100, prev_n, current_state["n_scored"]))
+            print("  [RECOMMEND] Check for potential overfitting (loosened filters?).")
+
+        # Stable
+        if (current_state["n_scored"] > 0 and
+            (prev_n == 0 or abs(current_state["n_scored"] - prev_n) / max(1, prev_n) < 0.3) and
+            (prev_sharpe <= 0 or curr_sharpe >= prev_sharpe * 0.7)):
+            print("  [STABLE] Pipeline metrics are consistent with previous run.")
+
+        # New strategy types
+        prev_types = set(prev_state.get("strategy_types", []))
+        curr_types = set(current_state["strategy_types"])
+        new_types = curr_types - prev_types
+        if new_types:
+            print("  [INFO] New strategy types: %s" % list(new_types))
+        lost_types = prev_types - curr_types
+        if lost_types:
+            print("  [INFO] Lost strategy types: %s" % list(lost_types))
+    else:
+        print("\\n--- FEEDBACK LOOP: First run (baseline saved) ---")
+
+    # Save current state
+    with open(fb_path, "w") as f:
+        json.dump(current_state, f, indent=2)
+
+    tracker.mark_completed(STEP, {"n_scored": current_state["n_scored"]})
+    print("Feedback state saved to %s" % fb_path)'''))
 
 # =============================================================
 # Write
