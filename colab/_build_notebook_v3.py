@@ -677,85 +677,89 @@ for market in CFG.markets:
     STEP = "fundamental_data_%s" % market
     fund_path = os.path.join(CFG.data_dir(market), "fundamentals.parquet")
 
+    _fund_loaded_from_cache = False
     if tracker.is_completed(STEP) and os.path.exists(fund_path):
         logger.info("[SKIP] %s" % STEP)
         _fdf = pd.read_parquet(fund_path)
         fundamental_cache[market] = {
             tk: _fdf.loc[tk].to_dict() for tk in _fdf.index if tk in _fdf.index
         }
-        continue
+        _fund_loaded_from_cache = True
 
-    if not CFG.enable_fundamental_features:
+    if not _fund_loaded_from_cache and not CFG.enable_fundamental_features:
         fundamental_cache[market] = {}
         tracker.mark_completed(STEP, {"skipped": True})
         continue
 
-    logger.info("[RUN] %s" % STEP)
-    t0 = time.time()
+    if not _fund_loaded_from_cache:
+        logger.info("[RUN] %s" % STEP)
+        t0 = time.time()
+
     reg = MARKET_REGISTRY[market]
     panel = ohlcv_data[market]
     tickers = panel.index.get_level_values(1).unique().tolist()
-    fund_rows = {}
+    fund_rows = fundamental_cache.get(market, {}) if _fund_loaded_from_cache else {}
 
-    if reg["data_source"] == "yfinance":
-        for i, tk in enumerate(tickers):
-            if (i + 1) % 10 == 0:
-                print("  Fundamental [%d/%d] %s" % (i + 1, len(tickers), tk))
+    if not _fund_loaded_from_cache:
+        if reg["data_source"] == "yfinance":
+            for i, tk in enumerate(tickers):
+                if (i + 1) % 10 == 0:
+                    print("  Fundamental [%d/%d] %s" % (i + 1, len(tickers), tk))
+                try:
+                    info = yf.Ticker(tk).info
+                    row = {}
+                    for fld in CFG.fundamental_fields:
+                        v = info.get(fld)
+                        row[fld] = float(v) if v is not None else np.nan
+                    row["sector"] = info.get("sector", US_SECTOR_MAP.get(tk, "Other"))
+                    fund_rows[tk] = row
+                except Exception as _e:
+                    logger.debug("Fund fetch fail %s: %s" % (tk, str(_e)[:60]))
+                    fund_rows[tk] = {fld: np.nan for fld in CFG.fundamental_fields}
+                    fund_rows[tk]["sector"] = US_SECTOR_MAP.get(tk, "Other")
+                time.sleep(0.1)  # rate-limit
+        elif reg["data_source"] == "pykrx":
             try:
-                info = yf.Ticker(tk).info
-                row = {}
-                for fld in CFG.fundamental_fields:
-                    v = info.get(fld)
-                    row[fld] = float(v) if v is not None else np.nan
-                row["sector"] = info.get("sector", US_SECTOR_MAP.get(tk, "Other"))
-                fund_rows[tk] = row
+                from pykrx import stock as _pks
+                import datetime as _dt
+                ds = _dt.datetime.now().strftime("%Y%m%d")
+                fund_df = _pks.get_market_fundamental_by_ticker(ds, market=reg.get("pykrx_market", market))
+                if fund_df is not None and not fund_df.empty:
+                    col_map = {}
+                    for c in fund_df.columns:
+                        cl = c.strip()
+                        if cl in ("PER", "trailingPE"):
+                            col_map[c] = "trailingPE"
+                        elif cl in ("PBR", "priceToBook"):
+                            col_map[c] = "priceToBook"
+                        elif cl in ("DIV", "dividendYield"):
+                            col_map[c] = "dividendYield"
+                        elif cl in ("EPS",):
+                            col_map[c] = "EPS"
+                    fund_df = fund_df.rename(columns=col_map)
+                    for tk in tickers:
+                        if tk in fund_df.index:
+                            row = {}
+                            for fld in CFG.fundamental_fields:
+                                v = fund_df.loc[tk].get(fld, np.nan)
+                                row[fld] = float(v) if v is not None and not (isinstance(v, float) and np.isnan(v)) else np.nan
+                            row["sector"] = "KR_" + market
+                            fund_rows[tk] = row
+                        else:
+                            fund_rows[tk] = {fld: np.nan for fld in CFG.fundamental_fields}
+                            fund_rows[tk]["sector"] = "KR_" + market
             except Exception as _e:
-                logger.debug("Fund fetch fail %s: %s" % (tk, str(_e)[:60]))
-                fund_rows[tk] = {fld: np.nan for fld in CFG.fundamental_fields}
-                fund_rows[tk]["sector"] = US_SECTOR_MAP.get(tk, "Other")
-            time.sleep(0.1)  # rate-limit
-    elif reg["data_source"] == "pykrx":
-        try:
-            from pykrx import stock as _pks
-            import datetime as _dt
-            ds = _dt.datetime.now().strftime("%Y%m%d")
-            fund_df = _pks.get_market_fundamental_by_ticker(ds, market=reg.get("pykrx_market", market))
-            if fund_df is not None and not fund_df.empty:
-                col_map = {}
-                for c in fund_df.columns:
-                    cl = c.strip()
-                    if cl in ("PER", "trailingPE"):
-                        col_map[c] = "trailingPE"
-                    elif cl in ("PBR", "priceToBook"):
-                        col_map[c] = "priceToBook"
-                    elif cl in ("DIV", "dividendYield"):
-                        col_map[c] = "dividendYield"
-                    elif cl in ("EPS",):
-                        col_map[c] = "EPS"
-                fund_df = fund_df.rename(columns=col_map)
+                logger.warning("pykrx fundamental fetch failed: %s" % str(_e)[:80])
                 for tk in tickers:
-                    if tk in fund_df.index:
-                        row = {}
-                        for fld in CFG.fundamental_fields:
-                            v = fund_df.loc[tk].get(fld, np.nan)
-                            row[fld] = float(v) if v is not None and not (isinstance(v, float) and np.isnan(v)) else np.nan
-                        row["sector"] = "KR_" + market
-                        fund_rows[tk] = row
-                    else:
-                        fund_rows[tk] = {fld: np.nan for fld in CFG.fundamental_fields}
-                        fund_rows[tk]["sector"] = "KR_" + market
-        except Exception as _e:
-            logger.warning("pykrx fundamental fetch failed: %s" % str(_e)[:80])
-            for tk in tickers:
-                fund_rows[tk] = {fld: np.nan for fld in CFG.fundamental_fields}
-                fund_rows[tk]["sector"] = "KR_" + market
+                    fund_rows[tk] = {fld: np.nan for fld in CFG.fundamental_fields}
+                    fund_rows[tk]["sector"] = "KR_" + market
 
-    fundamental_cache[market] = fund_rows
-    if fund_rows:
-        fdf = pd.DataFrame.from_dict(fund_rows, orient="index")
-        fdf.to_parquet(fund_path)
+        fundamental_cache[market] = fund_rows
+        if fund_rows:
+            fdf = pd.DataFrame.from_dict(fund_rows, orient="index")
+            fdf.to_parquet(fund_path)
 
-    # Compute time-series sector median returns for Axis D + sector-neutral labeling
+    # Compute time-series sector median returns for Axis D + sector-neutral labeling (runs always)
     if CFG.enable_sector_features and fund_rows:
         ticker_sectors = {tk: fund_rows.get(tk, {}).get("sector", "Other") for tk in tickers}
 
@@ -813,9 +817,10 @@ for market in CFG.markets:
                 "sector_median_fwd": {},
             }
 
-    elapsed = time.time() - t0
-    tracker.mark_completed(STEP, {"n_tickers": len(fund_rows), "time": elapsed})
-    print("%s fundamentals: %d tickers (%.0fs)" % (market, len(fund_rows), elapsed))
+    if not _fund_loaded_from_cache:
+        elapsed = time.time() - t0
+        tracker.mark_completed(STEP, {"n_tickers": len(fund_rows), "time": elapsed})
+        print("%s fundamentals: %d tickers (%.0fs)" % (market, len(fund_rows), elapsed))
 
 print("Fundamental cache:", {m: len(v) for m, v in fundamental_cache.items()})
 print("Sector data:", {m: len(v.get("ticker_sectors", {})) if isinstance(v, dict) else 0 for m, v in sector_mean_returns.items()})'''))
