@@ -1357,6 +1357,10 @@ for market in CFG.markets:
 
         logger.info("[RUN] %s" % STEP); t0 = time.time()
         valid = fp.dropna(subset=[fwd_col]).copy()
+        if len(valid) < CFG.min_sample_size:
+            logger.warning("Skipping %s: only %d valid rows" % (STEP, len(valid)))
+            dc = pd.DataFrame(); dc.to_parquet(sp); all_candidates_list.append(dc)
+            tracker.mark_completed(STEP, {"n":0,"reason":"insufficient_data"}); continue
         n_bins = int(valid[decile_cols[0]].dropna().max())+1 if decile_cols else 10
         cands = []
 
@@ -1416,6 +1420,10 @@ for market in CFG.markets:
 
         logger.info("[RUN] %s" % STEP); t0 = time.time()
         valid = fp.dropna(subset=[fwd_col]+feat_cols).copy()
+        if len(valid) < CFG.min_sample_size:
+            logger.warning("Skipping %s: only %d valid rows" % (STEP, len(valid)))
+            tc = pd.DataFrame(); tc.to_parquet(sp); all_candidates_list.append(tc)
+            tracker.mark_completed(STEP, {"n":0,"reason":"insufficient_data"}); continue
         X = valid[feat_cols].values.astype(np.float32)
         # v3: multiclass tri-state labels
         y = valid[label_col].values.astype(int) if label_col in valid.columns else (valid[fwd_col].values > 0).astype(int)
@@ -1472,6 +1480,10 @@ for market in CFG.markets:
 
         logger.info("[RUN] %s" % STEP); t0 = time.time()
         valid = fp.dropna(subset=[fwd_col]+feat_cols).copy()
+        if len(valid) < CFG.min_sample_size:
+            logger.warning("Skipping %s: only %d valid rows" % (STEP, len(valid)))
+            lc = pd.DataFrame(); lc.to_parquet(sp); all_candidates_list.append(lc)
+            tracker.mark_completed(STEP, {"n":0,"reason":"insufficient_data"}); continue
         X = valid[feat_cols].values.astype(np.float32)
         # v3: multinomial on tri-state labels
         y = valid[label_col].values.astype(int) if label_col in valid.columns else (valid[fwd_col].values > 0).astype(int)
