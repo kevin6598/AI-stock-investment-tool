@@ -1345,7 +1345,7 @@ all_candidates_list = []
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_")])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
     decile_cols = [c for c in fp.columns if c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
@@ -1407,7 +1407,7 @@ import pickle
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_")])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
     feat_cols = [c for c in fp.columns if not c.startswith("fwd_") and not c.startswith("label_") and not c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
@@ -1467,7 +1467,7 @@ from sklearn.preprocessing import StandardScaler
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_")])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
     feat_cols = [c for c in fp.columns if not c.startswith("fwd_") and not c.startswith("label_") and not c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
@@ -1750,7 +1750,7 @@ all_edge_results = []
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_")])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
     feat_cols = [c for c in fp.columns if not c.startswith("fwd_") and not c.startswith("label_") and not c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
@@ -1818,7 +1818,7 @@ all_wf_results = []
 for market in CFG.markets:
     if market not in feature_panels: continue
     fp = feature_panels[market]
-    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_")])
+    fwd_cols = sorted([c for c in fp.columns if c.startswith("fwd_return_") and "_sn_" not in c])
     feat_cols = [c for c in fp.columns if not c.startswith("fwd_") and not c.startswith("label_") and not c.endswith("_decile")]
 
     for fwd_col in fwd_cols:
