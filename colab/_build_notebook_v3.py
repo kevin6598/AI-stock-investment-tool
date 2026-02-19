@@ -2292,6 +2292,12 @@ Train a secondary model to predict P(strategy success | market state).
 If meta-score < threshold → FORCE NO TRADE. Overrides all signals.'''))
 
 C.append(code('''\
+# Initialize variables referenced by _build_meta_features (computed in later cells)
+if "theme_crash_scores" not in dir(): theme_crash_scores = {}
+if "cross_market_flags" not in dir(): cross_market_flags = {}
+if "abstention_count" not in dir(): abstention_count = 0
+if "mortality_killed" not in dir(): mortality_killed = []
+
 STEP = "meta_model"
 mm_path = os.path.join(CFG.global_eval_dir, "meta_scored.parquet")
 
