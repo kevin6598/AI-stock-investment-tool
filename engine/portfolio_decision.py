@@ -13,6 +13,7 @@ import numpy as np
 import logging
 
 from engine.liquidity import LiquidityConfig, LiquidityFilter
+from engine.early_warning import EarlyWarningEngine, EarlyWarningReport
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,8 @@ class PortfolioDecision:
     rejected: List[Dict[str, Any]]     # [{ticker, reasons}, ...]
     filter_pass_rate: float
     allocation_mode: str
+    early_warning: Optional[EarlyWarningReport] = None
+    exposure_multiplier: float = 1.0
 
 
 class PortfolioDecisionEngine:
@@ -408,16 +411,61 @@ class PortfolioDecisionEngine:
             capped = {t: v / total for t, v in capped.items()}
         return capped
 
+    def apply_early_warning_adjustment(
+        self,
+        weights: Dict[str, float],
+        early_warning: Optional[EarlyWarningReport] = None,
+    ) -> tuple:
+        """Scale portfolio weights by early warning exposure multiplier.
+
+        When the early warning system detects structural degradation,
+        weights are uniformly scaled down. The freed capital is implicitly
+        allocated to cash.
+
+        Args:
+            weights: current portfolio weights (sum to 1.0).
+            early_warning: EarlyWarningReport from the engine. If None,
+                weights are returned unchanged.
+
+        Returns:
+            (adjusted_weights, exposure_multiplier) tuple.
+        """
+        if early_warning is None:
+            return weights, 1.0
+
+        multiplier = early_warning.exposure_multiplier
+
+        if multiplier >= 1.0:
+            return weights, 1.0
+
+        if multiplier <= 0.0:
+            logger.warning(
+                "Early warning CRITICAL (score=%.3f). Zeroing all positions.",
+                early_warning.warning_score,
+            )
+            return {t: 0.0 for t in weights}, 0.0
+
+        adjusted = {t: w * multiplier for t, w in weights.items()}
+        logger.info(
+            "Early warning %s (score=%.3f): scaling exposure to %.0f%%",
+            early_warning.level,
+            early_warning.warning_score,
+            multiplier * 100,
+        )
+        return adjusted, multiplier
+
     def run(
         self,
         predictions: List[Any],
         returns_df: Optional[Any] = None,
+        early_warning: Optional[EarlyWarningReport] = None,
     ) -> PortfolioDecision:
         """Execute the full portfolio decision pipeline.
 
         Args:
             predictions: List of FullInferenceResult-like objects (or dicts).
             returns_df: Historical returns DataFrame for allocation.
+            early_warning: Optional EarlyWarningReport to adjust exposure.
 
         Returns:
             PortfolioDecision with selected stocks, weights, and metrics.
@@ -435,6 +483,8 @@ class PortfolioDecisionEngine:
                 rejected=rejected,
                 filter_pass_rate=0.0,
                 allocation_mode=self.config.allocation_mode,
+                early_warning=early_warning,
+                exposure_multiplier=early_warning.exposure_multiplier if early_warning else 1.0,
             )
 
         # Step 2: Rank
@@ -443,7 +493,12 @@ class PortfolioDecisionEngine:
         # Step 3: Allocate
         weights = self.allocate(ranked, returns_df)
 
-        # Step 4: Compute expected portfolio metrics
+        # Step 4: Apply early warning exposure adjustment
+        weights, exposure_mult = self.apply_early_warning_adjustment(
+            weights, early_warning
+        )
+
+        # Step 5: Compute expected portfolio metrics
         selected = list(weights.keys())
         exp_ret = 0.0
         for pred in ranked:
@@ -478,6 +533,8 @@ class PortfolioDecisionEngine:
             rejected=rejected,
             filter_pass_rate=float(pass_rate),
             allocation_mode=self.config.allocation_mode,
+            early_warning=early_warning,
+            exposure_multiplier=exposure_mult,
         )
 
 

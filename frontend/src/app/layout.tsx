@@ -3,8 +3,8 @@ import { ThemeProvider } from "next-themes";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AI Stock Prediction Platform",
-  description: "Multi-modal deep learning stock prediction",
+  title: "Strategy Governance Platform",
+  description: "Strategy survivability, failure detection, and capital allocation governance",
 };
 
 export default function RootLayout({
@@ -26,7 +26,7 @@ export default function RootLayout({
                       className="text-accent font-bold text-lg"
                       aria-label="Home"
                     >
-                      AI Predict
+                      Strategy Gov
                     </a>
                     <div className="hidden md:flex gap-6">
                       <a
@@ -36,22 +36,28 @@ export default function RootLayout({
                         Dashboard
                       </a>
                       <a
+                        href="/early-warning"
+                        className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm"
+                      >
+                        Early Warning
+                      </a>
+                      <a
                         href="/market"
                         className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm"
                       >
-                        Market
+                        Market Regime
                       </a>
                       <a
-                        href="/portfolio"
+                        href="/exposure"
                         className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm"
                       >
-                        Portfolio
+                        Exposure
                       </a>
                       <a
-                        href="/model"
+                        href="/candidates"
                         className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm"
                       >
-                        Model
+                        Candidates
                       </a>
                       <a
                         href="/settings"
@@ -63,7 +69,7 @@ export default function RootLayout({
                   </div>
                   <div className="flex items-center gap-4">
                     <span className="text-xs text-gray-400 dark:text-gray-500">
-                      Powered by Hybrid Multi-Modal AI
+                      Can I still trust this strategy?
                     </span>
                   </div>
                 </div>

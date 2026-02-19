@@ -39,3 +39,20 @@ export function riskLabel(risk: number): string {
   if (risk >= 0.2) return "Low";
   return "Very Low";
 }
+
+export function warningLevelColor(level: string): string {
+  switch (level) {
+    case "HEALTHY":
+      return "text-emerald-400";
+    case "CAUTION":
+      return "text-yellow-400";
+    case "WARNING":
+      return "text-orange-400";
+    case "DANGER":
+      return "text-rose-400";
+    case "CRITICAL":
+      return "text-red-600";
+    default:
+      return "text-gray-400";
+  }
+}

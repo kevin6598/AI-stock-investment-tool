@@ -105,6 +105,74 @@ export interface Top10Response {
   pass_rate: number;
 }
 
+// --- Strategy Governance Types ---
+
+export interface StrategySignal {
+  feature_1: string;
+  feature_1_decile: number;
+  feature_2: string;
+  feature_2_decile: number;
+  logic: string;
+}
+
+export interface StrategyBacktest {
+  sharpe: number;
+  beta_neutral_sharpe: number;
+  total_return: number;
+  precision_buy: number;
+  win_rate: number;
+  win_folds: string;
+  monthly_consistency: number;
+  cvar: number;
+  turnover: number;
+}
+
+export interface StrategyGovernance {
+  trust_score: number;
+  trust_level: string;
+  recommendation: string;
+}
+
+export interface StrategyStatusResponse {
+  strategy_id: string;
+  version: string;
+  market: string;
+  horizon_days: number;
+  type: string;
+  thesis: string;
+  signal: StrategySignal;
+  backtest: StrategyBacktest;
+  governance: StrategyGovernance;
+}
+
+export interface WarningSignal {
+  name: string;
+  score: number;
+  weight: number;
+  weighted_contribution: number;
+  detail: string;
+  raw_value: number | null;
+}
+
+export interface EarlyWarningResponse {
+  warning_score: number;
+  level: string;
+  exposure_multiplier: number;
+  signals: WarningSignal[];
+  timestamp: string;
+  strategy_id: string;
+}
+
+export interface ExposureGuidanceResponse {
+  strategy_id: string;
+  warning_score: number;
+  warning_level: string;
+  exposure_multiplier: number;
+  recommended_action: string;
+  position_guidance: string;
+  timestamp: string;
+}
+
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${url}`, {
     headers: { "Content-Type": "application/json" },
@@ -154,5 +222,18 @@ export const api = {
   ): Promise<Top10Response> {
     const params = new URLSearchParams({ horizon, allocation });
     return fetchJSON(`/api/v1/portfolio/top10/${market}?${params}`);
+  },
+
+  // Strategy Governance endpoints
+  getStrategyStatus(): Promise<StrategyStatusResponse> {
+    return fetchJSON("/api/v1/strategy/status");
+  },
+
+  getEarlyWarning(): Promise<EarlyWarningResponse> {
+    return fetchJSON("/api/v1/strategy/early-warning");
+  },
+
+  getExposureGuidance(): Promise<ExposureGuidanceResponse> {
+    return fetchJSON("/api/v1/strategy/exposure-guidance");
   },
 };

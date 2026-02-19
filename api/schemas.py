@@ -143,3 +143,65 @@ class Top10Response(BaseModel):
     model_version: Optional[str] = None
     total_candidates: int
     pass_rate: float
+
+
+# --- Strategy Governance Models ---
+
+class StrategySignalSchema(BaseModel):
+    feature_1: str
+    feature_1_decile: int
+    feature_2: str
+    feature_2_decile: int
+    logic: str
+
+class StrategyBacktestSchema(BaseModel):
+    sharpe: float
+    beta_neutral_sharpe: float
+    total_return: float
+    precision_buy: float
+    win_rate: float
+    win_folds: str
+    monthly_consistency: float
+    cvar: float
+    turnover: float
+
+class StrategyGovernanceSchema(BaseModel):
+    trust_score: float
+    trust_level: str
+    recommendation: str
+
+class StrategyStatusResponse(BaseModel):
+    strategy_id: str
+    version: str
+    market: str
+    horizon_days: int
+    type: str
+    thesis: str
+    signal: StrategySignalSchema
+    backtest: StrategyBacktestSchema
+    governance: StrategyGovernanceSchema
+
+class WarningSignalSchema(BaseModel):
+    name: str
+    score: float
+    weight: float
+    weighted_contribution: float
+    detail: str
+    raw_value: Optional[float] = None
+
+class EarlyWarningResponse(BaseModel):
+    warning_score: float
+    level: str
+    exposure_multiplier: float
+    signals: List[WarningSignalSchema]
+    timestamp: str
+    strategy_id: str
+
+class ExposureGuidanceResponse(BaseModel):
+    strategy_id: str
+    warning_score: float
+    warning_level: str
+    exposure_multiplier: float
+    recommended_action: str
+    position_guidance: str
+    timestamp: str
