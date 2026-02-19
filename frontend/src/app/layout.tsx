@@ -54,6 +54,12 @@ export default function RootLayout({
                         Exposure
                       </a>
                       <a
+                        href="/portfolio"
+                        className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm"
+                      >
+                        Portfolio
+                      </a>
+                      <a
                         href="/candidates"
                         className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm"
                       >
