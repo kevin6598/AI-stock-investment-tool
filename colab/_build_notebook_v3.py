@@ -52,8 +52,19 @@ C.append(md('''\
 # CELL 1 — Pip install
 # ============================================================
 C.append(code('''\
-!pip install -q --upgrade numpy pandas
-!pip install -q yfinance scikit-learn scipy matplotlib pyarrow joblib pykrx finance-datareader statsmodels'''))
+# Phase 1: upgrade numpy first, then everything else in one pass to avoid binary mismatch
+!pip install -q --upgrade numpy pandas scipy scikit-learn
+!pip install -q yfinance matplotlib pyarrow joblib pykrx finance-datareader statsmodels
+
+# --- Auto-restart runtime after install (runs only once) ---
+import importlib, sys
+try:
+    import numpy as np
+    np.zeros(1, dtype=np.float64)  # trigger binary check
+    print("numpy OK — no restart needed")
+except (ValueError, ImportError):
+    print("Binary mismatch detected — restarting runtime...")
+    import os; os.kill(os.getpid(), 9)'''))
 
 # ============================================================
 # CELL 2 — Config header
