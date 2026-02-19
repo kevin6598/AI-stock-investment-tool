@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate v3 multi-market quant pipeline with 14 gap-closure enhancements + 5-axis dataset diversity."""
+"""Generate v3.1 multi-market quant pipeline with alpha decomposition, sector-neutral labeling, and risk-aware signal intelligence."""
 import json, sys
 
 
@@ -24,10 +24,10 @@ C = []
 # CELL 0 — Header
 # ============================================================
 C.append(md('''\
-# Multi-Market Quantitative Research Pipeline — v3
-## Post-Report Gap Closure, Meta-Control & System Hardening
+# Multi-Market Quantitative Research Pipeline — v3.1
+## Alpha Decomposition, Sector-Neutral Labeling & Risk-Aware Signal Intelligence
 
-**Production-grade** pipeline with 14 mandatory enhancement layers:
+**Production-grade** pipeline with 14 mandatory enhancement layers + 7 alpha/risk modules:
 
 | # | Enhancement | Purpose |
 |---|-------------|---------|
@@ -234,6 +234,37 @@ class PipelineConfig:
         "marketCap", "trailingPE", "priceToBook",
         "returnOnEquity", "returnOnAssets", "revenueGrowth", "earningsGrowth",
     ])
+
+    # --- 25. Sector-Neutral Labeling ---
+    enable_sector_neutral_labels: bool = True
+
+    # --- 26. Sector Rotation ---
+    enable_sector_rotation: bool = True
+    sector_rotation_min_constituents: int = 3
+    sector_alpha_threshold: float = 0.0
+
+    # --- 27. Theme Crash Early Warning ---
+    enable_theme_crash: bool = True
+    theme_crash_veto_threshold: float = 0.7
+    theme_crash_corr_window: int = 60
+    theme_crash_volume_window: int = 20
+
+    # --- 28. Trade Abstention ---
+    enable_trade_abstention: bool = True
+    trade_abstention_min_ev: float = 0.001
+
+    # --- 29. Cross-Market Consistency ---
+    enable_cross_market_consistency: bool = True
+    cross_market_contagion_lag_days: int = 5
+
+    # --- 30. Regime-Conditional Thresholds ---
+    enable_regime_adaptive_thresholds: bool = True
+
+    # --- 31. Strategy Mortality ---
+    enable_strategy_mortality: bool = True
+    mortality_rolling_sharpe_window: int = 4
+    mortality_sharpe_kill_threshold: float = 0.0
+    mortality_consecutive_negative_folds: int = 3
 
     # --- Scoring weights ---
     w_stability: float = 0.25
@@ -534,18 +565,110 @@ fundamental_cache = {}  # {market: {ticker: {field: value}}}
 sector_mean_returns = {}  # {market: {sector: mean_20d_return}}
 
 US_SECTOR_MAP = {
-    "AAPL":"Tech","MSFT":"Tech","GOOGL":"Tech","AMZN":"Consumer","NVDA":"Tech",
-    "META":"Tech","TSLA":"Consumer","BRK-B":"Financials","JPM":"Financials",
-    "JNJ":"Healthcare","V":"Financials","PG":"Consumer","UNH":"Healthcare",
-    "HD":"Consumer","MA":"Financials","DIS":"Consumer","BAC":"Financials",
-    "NFLX":"Consumer","ADBE":"Tech","CRM":"Tech","XOM":"Energy","VZ":"Telecom",
-    "KO":"Consumer","INTC":"Tech","PEP":"Consumer","ABT":"Healthcare",
-    "CSCO":"Tech","COST":"Consumer","MRK":"Healthcare","WMT":"Consumer",
-    "AVGO":"Tech","ACN":"Tech","CVX":"Energy","NKE":"Consumer","LLY":"Healthcare",
-    "MCD":"Consumer","QCOM":"Tech","UPS":"Industrials","BMY":"Healthcare",
-    "LIN":"Materials","NEE":"Utilities","ORCL":"Tech","RTX":"Industrials",
-    "HON":"Industrials","TXN":"Tech","AMD":"Tech","PYPL":"Tech",
-    "CMCSA":"Telecom","TMO":"Healthcare","DHR":"Healthcare",
+    # Technology (39)
+    "AAPL":"Technology","MSFT":"Technology","GOOGL":"Technology","NVDA":"Technology",
+    "META":"Technology","ADBE":"Technology","CRM":"Technology","INTC":"Technology",
+    "CSCO":"Technology","AVGO":"Technology","ACN":"Technology","QCOM":"Technology",
+    "TXN":"Technology","AMD":"Technology","PYPL":"Technology","ORCL":"Technology",
+    "IBM":"Technology","NOW":"Technology","INTU":"Technology","AMAT":"Technology",
+    "MU":"Technology","LRCX":"Technology","ADI":"Technology","KLAC":"Technology",
+    "SNPS":"Technology","CDNS":"Technology","MCHP":"Technology","FTNT":"Technology",
+    "PANW":"Technology","CRWD":"Technology","WDAY":"Technology","TEAM":"Technology",
+    "ADSK":"Technology","ANSS":"Technology","NXPI":"Technology","MRVL":"Technology",
+    "ON":"Technology","GEN":"Technology","MPWR":"Technology",
+    # CommunicationServices (24)
+    "GOOG":"CommunicationServices","DIS":"CommunicationServices",
+    "NFLX":"CommunicationServices","CMCSA":"CommunicationServices",
+    "VZ":"CommunicationServices","T":"CommunicationServices",
+    "TMUS":"CommunicationServices","CHTR":"CommunicationServices",
+    "EA":"CommunicationServices","TTWO":"CommunicationServices",
+    "WBD":"CommunicationServices","PARA":"CommunicationServices",
+    "LYV":"CommunicationServices","MTCH":"CommunicationServices",
+    "IPG":"CommunicationServices","OMC":"CommunicationServices",
+    "NWSA":"CommunicationServices","NWS":"CommunicationServices",
+    "FOXA":"CommunicationServices","FOX":"CommunicationServices",
+    "LUMN":"CommunicationServices","PINS":"CommunicationServices",
+    "SNAP":"CommunicationServices","RBLX":"CommunicationServices",
+    # Financials (38)
+    "BRK-B":"Financials","JPM":"Financials","V":"Financials","MA":"Financials",
+    "BAC":"Financials","WFC":"Financials","GS":"Financials","MS":"Financials",
+    "SCHW":"Financials","C":"Financials","BLK":"Financials","SPGI":"Financials",
+    "AXP":"Financials","CB":"Financials","MMC":"Financials","PGR":"Financials",
+    "AON":"Financials","CME":"Financials","ICE":"Financials","MET":"Financials",
+    "AIG":"Financials","TRV":"Financials","ALL":"Financials","AFL":"Financials",
+    "PRU":"Financials","USB":"Financials","PNC":"Financials","TFC":"Financials",
+    "BK":"Financials","STT":"Financials","FITB":"Financials","HBAN":"Financials",
+    "CFG":"Financials","KEY":"Financials","RF":"Financials","NTRS":"Financials",
+    "CINF":"Financials","FDS":"Financials",
+    # Healthcare (40)
+    "JNJ":"Healthcare","UNH":"Healthcare","ABT":"Healthcare","MRK":"Healthcare",
+    "LLY":"Healthcare","BMY":"Healthcare","TMO":"Healthcare","DHR":"Healthcare",
+    "PFE":"Healthcare","ABBV":"Healthcare","AMGN":"Healthcare","GILD":"Healthcare",
+    "ISRG":"Healthcare","MDT":"Healthcare","SYK":"Healthcare","BDX":"Healthcare",
+    "CI":"Healthcare","CVS":"Healthcare","HUM":"Healthcare","ELV":"Healthcare",
+    "ZTS":"Healthcare","VRTX":"Healthcare","REGN":"Healthcare","BSX":"Healthcare",
+    "EW":"Healthcare","IDXX":"Healthcare","IQV":"Healthcare","MTD":"Healthcare",
+    "A":"Healthcare","DXCM":"Healthcare","ALGN":"Healthcare","BAX":"Healthcare",
+    "HOLX":"Healthcare","RMD":"Healthcare","WST":"Healthcare","MOH":"Healthcare",
+    "CNC":"Healthcare","BIIB":"Healthcare","MRNA":"Healthcare","ILMN":"Healthcare",
+    # Industrials (40)
+    "UPS":"Industrials","RTX":"Industrials","HON":"Industrials","CAT":"Industrials",
+    "DE":"Industrials","GE":"Industrials","BA":"Industrials","LMT":"Industrials",
+    "NOC":"Industrials","GD":"Industrials","MMM":"Industrials","EMR":"Industrials",
+    "ETN":"Industrials","ITW":"Industrials","WM":"Industrials","RSG":"Industrials",
+    "CSX":"Industrials","NSC":"Industrials","UNP":"Industrials","FDX":"Industrials",
+    "DAL":"Industrials","LUV":"Industrials","UAL":"Industrials","AAL":"Industrials",
+    "CARR":"Industrials","OTIS":"Industrials","PCAR":"Industrials","CMI":"Industrials",
+    "ROK":"Industrials","FAST":"Industrials","CTAS":"Industrials","PAYX":"Industrials",
+    "SWK":"Industrials","IR":"Industrials","TT":"Industrials","VRSK":"Industrials",
+    "CPRT":"Industrials","WAB":"Industrials","PWR":"Industrials","AME":"Industrials",
+    # ConsumerDiscretionary (29)
+    "AMZN":"ConsumerDiscretionary","TSLA":"ConsumerDiscretionary",
+    "HD":"ConsumerDiscretionary","NKE":"ConsumerDiscretionary",
+    "MCD":"ConsumerDiscretionary","SBUX":"ConsumerDiscretionary",
+    "LOW":"ConsumerDiscretionary","TJX":"ConsumerDiscretionary",
+    "BKNG":"ConsumerDiscretionary","CMG":"ConsumerDiscretionary",
+    "MAR":"ConsumerDiscretionary","HLT":"ConsumerDiscretionary",
+    "ORLY":"ConsumerDiscretionary","AZO":"ConsumerDiscretionary",
+    "ROST":"ConsumerDiscretionary","DHI":"ConsumerDiscretionary",
+    "LEN":"ConsumerDiscretionary","PHM":"ConsumerDiscretionary",
+    "NVR":"ConsumerDiscretionary","GRMN":"ConsumerDiscretionary",
+    "POOL":"ConsumerDiscretionary","BBY":"ConsumerDiscretionary",
+    "EBAY":"ConsumerDiscretionary","APTV":"ConsumerDiscretionary",
+    "GM":"ConsumerDiscretionary","F":"ConsumerDiscretionary",
+    "YUM":"ConsumerDiscretionary","DPZ":"ConsumerDiscretionary",
+    "ULTA":"ConsumerDiscretionary",
+    # ConsumerStaples (24)
+    "PG":"ConsumerStaples","KO":"ConsumerStaples","PEP":"ConsumerStaples",
+    "COST":"ConsumerStaples","WMT":"ConsumerStaples","PM":"ConsumerStaples",
+    "MO":"ConsumerStaples","CL":"ConsumerStaples","MDLZ":"ConsumerStaples",
+    "KMB":"ConsumerStaples","GIS":"ConsumerStaples","K":"ConsumerStaples",
+    "HSY":"ConsumerStaples","SJM":"ConsumerStaples","MKC":"ConsumerStaples",
+    "CPB":"ConsumerStaples","HRL":"ConsumerStaples","SYY":"ConsumerStaples",
+    "ADM":"ConsumerStaples","STZ":"ConsumerStaples","BF-B":"ConsumerStaples",
+    "TAP":"ConsumerStaples","TSN":"ConsumerStaples","KHC":"ConsumerStaples",
+    # Energy (25)
+    "XOM":"Energy","CVX":"Energy","COP":"Energy","EOG":"Energy","SLB":"Energy",
+    "MPC":"Energy","PSX":"Energy","VLO":"Energy","OXY":"Energy","PXD":"Energy",
+    "DVN":"Energy","HES":"Energy","HAL":"Energy","BKR":"Energy","FANG":"Energy",
+    "MRO":"Energy","APA":"Energy","CTRA":"Energy","OKE":"Energy","WMB":"Energy",
+    "KMI":"Energy","ET":"Energy","TRGP":"Energy","LNG":"Energy","EQT":"Energy",
+    # Utilities (14)
+    "NEE":"Utilities","DUK":"Utilities","SO":"Utilities","D":"Utilities",
+    "AEP":"Utilities","SRE":"Utilities","XEL":"Utilities","EXC":"Utilities",
+    "ED":"Utilities","WEC":"Utilities","ES":"Utilities","AWK":"Utilities",
+    "AEE":"Utilities","CMS":"Utilities",
+    # Materials (19)
+    "LIN":"Materials","APD":"Materials","SHW":"Materials","ECL":"Materials",
+    "NEM":"Materials","FCX":"Materials","NUE":"Materials","DD":"Materials",
+    "DOW":"Materials","PPG":"Materials","VMC":"Materials","MLM":"Materials",
+    "ALB":"Materials","CF":"Materials","MOS":"Materials","IFF":"Materials",
+    "CE":"Materials","EMN":"Materials","PKG":"Materials",
+    # RealEstate (14)
+    "AMT":"RealEstate","PLD":"RealEstate","CCI":"RealEstate","EQIX":"RealEstate",
+    "PSA":"RealEstate","SPG":"RealEstate","O":"RealEstate","DLR":"RealEstate",
+    "WELL":"RealEstate","AVB":"RealEstate","EQR":"RealEstate","VTR":"RealEstate",
+    "ARE":"RealEstate","MAA":"RealEstate",
 }
 
 for market in CFG.markets:
@@ -632,26 +755,70 @@ for market in CFG.markets:
         fdf = pd.DataFrame.from_dict(fund_rows, orient="index")
         fdf.to_parquet(fund_path)
 
-    # Compute sector mean 20d returns for Axis D
+    # Compute time-series sector median returns for Axis D + sector-neutral labeling
     if CFG.enable_sector_features and fund_rows:
         ticker_sectors = {tk: fund_rows.get(tk, {}).get("sector", "Other") for tk in tickers}
-        sector_rets = {}
+
+        # Build per-ticker 20d return series
+        ticker_r20 = {}
         for tk in tickers:
             try:
                 td = panel.loc[(slice(None), tk), :].droplevel(1)
-                r20 = td["close"].pct_change(20).iloc[-1] if len(td) > 20 else 0.0
-                sec = ticker_sectors.get(tk, "Other")
-                sector_rets.setdefault(sec, []).append(float(r20) if not np.isnan(r20) else 0.0)
+                ticker_r20[tk] = td["close"].pct_change(20)
             except Exception:
                 pass
-        sector_mean_returns[market] = {sec: float(np.mean(vals)) for sec, vals in sector_rets.items()}
+
+        # Cross-sectional median per sector per date (rolling 20d return)
+        if ticker_r20:
+            r20_df = pd.DataFrame(ticker_r20)
+            sector_cols = {}
+            for tk, sec in ticker_sectors.items():
+                sector_cols.setdefault(sec, []).append(tk)
+            ts_median = pd.DataFrame(index=r20_df.index)
+            for sec, cols in sector_cols.items():
+                valid = [c for c in cols if c in r20_df.columns]
+                if valid:
+                    ts_median[sec] = r20_df[valid].median(axis=1)
+
+            # Also compute sector median forward returns per horizon for SN labeling
+            sector_median_fwd = {}
+            for fd in CFG.forward_days_list:
+                ticker_fwd = {}
+                for tk in tickers:
+                    try:
+                        td = panel.loc[(slice(None), tk), :].droplevel(1)
+                        raw_fwd = td["close"].pct_change(fd).shift(-fd)
+                        net_fwd = raw_fwd - 2 * CFG.total_cost_bps / 10000
+                        ticker_fwd[tk] = net_fwd
+                    except Exception:
+                        pass
+                if ticker_fwd:
+                    fwd_df = pd.DataFrame(ticker_fwd)
+                    med_fwd = pd.DataFrame(index=fwd_df.index)
+                    for sec, cols in sector_cols.items():
+                        valid = [c for c in cols if c in fwd_df.columns]
+                        if valid:
+                            med_fwd[sec] = fwd_df[valid].median(axis=1)
+                    sector_median_fwd[fd] = med_fwd
+
+            sector_mean_returns[market] = {
+                "ts": ts_median,
+                "ticker_sectors": ticker_sectors,
+                "sector_median_fwd": sector_median_fwd,
+            }
+        else:
+            sector_mean_returns[market] = {
+                "ts": pd.DataFrame(),
+                "ticker_sectors": ticker_sectors,
+                "sector_median_fwd": {},
+            }
 
     elapsed = time.time() - t0
     tracker.mark_completed(STEP, {"n_tickers": len(fund_rows), "time": elapsed})
     print("%s fundamentals: %d tickers (%.0fs)" % (market, len(fund_rows), elapsed))
 
 print("Fundamental cache:", {m: len(v) for m, v in fundamental_cache.items()})
-print("Sector mean returns:", {m: len(v) for m, v in sector_mean_returns.items()})'''))
+print("Sector data:", {m: len(v.get("ticker_sectors", {})) if isinstance(v, dict) else 0 for m, v in sector_mean_returns.items()})'''))
 
 # ============================================================
 # CELL — Macro Data Loading (Axis C)
@@ -782,6 +949,121 @@ else:
 print("Sentiment proxy:", sentiment_data.shape if len(sentiment_data) > 0 else "empty")'''))
 
 # ============================================================
+# CELL — Theme Crash Early Warning Function
+# ============================================================
+C.append(md('''\
+## 3d. Theme Crash Early Warning
+
+5-indicator fragility score per sector:
+1. Concentration ratio (top-3 weight)
+2. Drawdown vs mean return
+3. Rising CVaR (recent 60d vs prior 60d)
+4. Cross-stock correlation (herding detection)
+5. Volume climax (spike + negative returns)'''))
+
+C.append(code('''\
+def compute_theme_crash_score(panel, ticker_sectors, sector, cfg):
+    """Compute theme crash fragility score [0,1] for a sector.
+
+    5 fragility indicators (weighted average):
+      1. Concentration ratio (0.15): top-3 stock weight in sector
+      2. Drawdown vs mean return (0.25): current DD / annualized mean
+      3. Rising CVaR (0.25): recent 60d CVaR worse than prior 60d
+      4. Cross-stock correlation (0.20): avg pairwise corr (>0.3 = herding)
+      5. Volume climax (0.15): volume spike + negative returns
+    """
+    sector_tickers = [tk for tk, sec in ticker_sectors.items() if sec == sector]
+    if len(sector_tickers) < cfg.sector_rotation_min_constituents:
+        return 0.0
+
+    # Collect per-ticker close and volume series
+    closes = {}
+    volumes = {}
+    for tk in sector_tickers:
+        try:
+            td = panel.loc[(slice(None), tk), :].droplevel(1)
+            closes[tk] = td["close"]
+            volumes[tk] = td["volume"]
+        except Exception:
+            pass
+
+    if len(closes) < 2:
+        return 0.0
+
+    close_df = pd.DataFrame(closes).dropna(how="all")
+    vol_df = pd.DataFrame(volumes).reindex(close_df.index).fillna(0)
+    if len(close_df) < cfg.theme_crash_corr_window:
+        return 0.0
+
+    scores = []
+
+    # 1. Concentration ratio (0.15): top-3 market cap proxy (latest close * volume)
+    latest_mcap = (close_df.iloc[-1] * vol_df.iloc[-20:].mean()).dropna()
+    if len(latest_mcap) >= 3:
+        total = latest_mcap.sum()
+        top3 = latest_mcap.nlargest(3).sum()
+        conc = float(top3 / total) if total > 0 else 0.5
+        scores.append(0.15 * min(1.0, conc))
+    else:
+        scores.append(0.15 * 0.5)
+
+    # 2. Drawdown vs mean return (0.25)
+    sector_avg = close_df.mean(axis=1)
+    if len(sector_avg) > 60:
+        peak = sector_avg.rolling(252, min_periods=60).max()
+        dd = (sector_avg - peak) / peak.replace(0, np.nan)
+        current_dd = abs(float(dd.iloc[-1])) if not np.isnan(dd.iloc[-1]) else 0
+        ann_mean = float(sector_avg.pct_change().mean() * 252)
+        dd_ratio = min(1.0, current_dd / max(0.01, abs(ann_mean)))
+        scores.append(0.25 * dd_ratio)
+    else:
+        scores.append(0.25 * 0.0)
+
+    # 3. Rising CVaR (0.25): recent 60d CVaR worse than prior 60d
+    rets = sector_avg.pct_change().dropna()
+    w = cfg.theme_crash_corr_window
+    if len(rets) > 2 * w:
+        recent = rets.iloc[-w:]
+        prior = rets.iloc[-2*w:-w]
+        cvar_recent = float(np.sort(recent.values)[:max(1, int(0.05 * w))].mean())
+        cvar_prior = float(np.sort(prior.values)[:max(1, int(0.05 * w))].mean())
+        cvar_worsened = 1.0 if cvar_recent < cvar_prior else 0.0
+        scores.append(0.25 * cvar_worsened)
+    else:
+        scores.append(0.25 * 0.0)
+
+    # 4. Cross-stock correlation (0.20): avg pairwise corr in sector
+    if close_df.shape[1] >= 2:
+        ret_df = close_df.pct_change().iloc[-w:]
+        corr_mat = ret_df.corr()
+        n = len(corr_mat)
+        if n >= 2:
+            upper = corr_mat.values[np.triu_indices(n, k=1)]
+            avg_corr = float(np.nanmean(upper))
+            herding = min(1.0, max(0.0, (avg_corr - 0.1) / 0.5))
+            scores.append(0.20 * herding)
+        else:
+            scores.append(0.20 * 0.0)
+    else:
+        scores.append(0.20 * 0.0)
+
+    # 5. Volume climax (0.15): volume spike + negative returns
+    vw = cfg.theme_crash_volume_window
+    sector_vol = vol_df.sum(axis=1)
+    if len(sector_vol) > vw:
+        vol_ma = sector_vol.rolling(60, min_periods=20).mean()
+        vol_ratio = sector_vol.iloc[-1] / vol_ma.iloc[-1] if vol_ma.iloc[-1] > 0 else 1.0
+        recent_ret = float(sector_avg.pct_change(vw).iloc[-1]) if len(sector_avg) > vw else 0
+        climax = 1.0 if (vol_ratio > 2.0 and recent_ret < -0.05) else 0.0
+        scores.append(0.15 * climax)
+    else:
+        scores.append(0.15 * 0.0)
+
+    return min(1.0, sum(scores))
+
+print("Theme crash function defined.")'''))
+
+# ============================================================
 # CELL 14-16 — Feature Engine + Tri-state Labeling
 # ============================================================
 C.append(md('''\
@@ -834,6 +1116,10 @@ def compute_tristate_labels(excess_return, threshold_pct):
     labels[vals >= th] = 1
     labels[vals <= -th] = -1
     return labels
+
+def compute_sector_neutral_excess(net_fwd, sector_median_fwd):
+    """Stock fwd return minus sector median fwd return."""
+    return net_fwd - sector_median_fwd
 
 def check_class_balance(labels):
     """Check tri-state label distribution. Returns (ok, distribution_dict)."""
@@ -952,15 +1238,22 @@ for market in CFG.markets:
                     for fld in ["trailingPE", "priceToBook", "returnOnEquity"]:
                         fund[fld] = fund_info.get(fld, np.nan)
 
-            # --- Axis D: Sector relative ---
+            # --- Axis D: Sector relative (time-series) ---
             sect = pd.DataFrame(index=close.index)
             if CFG.enable_sector_features:
                 fund_info_s = fundamental_cache.get(market, {}).get(ticker, {})
                 ticker_sector = fund_info_s.get("sector", "Other") if fund_info_s else "Other"
-                sect_means = sector_mean_returns.get(market, {})
-                sect_mean = sect_means.get(ticker_sector, 0.0)
+                smr = sector_mean_returns.get(market, {})
                 s20 = close.pct_change(20)
-                sect["sector_relative_20d"] = s20 - sect_mean
+                if isinstance(smr, dict) and "ts" in smr:
+                    ts_df = smr["ts"]
+                    if ticker_sector in ts_df.columns:
+                        sector_med_ts = ts_df[ticker_sector].reindex(close.index, method="ffill")
+                        sect["sector_relative_20d"] = s20 - sector_med_ts
+                    else:
+                        sect["sector_relative_20d"] = s20
+                else:
+                    sect["sector_relative_20d"] = s20
 
             combined = pd.concat([mom, vol, reg, liq, fund, sect], axis=1)
 
@@ -974,6 +1267,21 @@ for market in CFG.markets:
                 excess = net_fwd - mf
                 th_pct = CFG.tristate_thresholds_pct.get(fd, 1.0)
                 combined["label_%dd" % fd] = compute_tristate_labels(excess, th_pct)
+
+                # Sector-neutral excess return and label
+                if CFG.enable_sector_neutral_labels:
+                    smr = sector_mean_returns.get(market, {})
+                    if isinstance(smr, dict) and "sector_median_fwd" in smr:
+                        smf = smr["sector_median_fwd"].get(fd, pd.DataFrame())
+                        if ticker_sector in smf.columns:
+                            sector_med = smf[ticker_sector].reindex(close.index, method="ffill").fillna(0)
+                        else:
+                            sector_med = 0
+                    else:
+                        sector_med = 0
+                    sn_excess = compute_sector_neutral_excess(net_fwd, sector_med)
+                    combined["fwd_return_sn_%dd" % fd] = sn_excess
+                    combined["label_sn_%dd" % fd] = compute_tristate_labels(sn_excess, th_pct)
 
             combined["ticker"] = ticker
             combined.index.name = "date"
@@ -1006,6 +1314,12 @@ for market in CFG.markets:
             status = "OK" if ok else "WARN"
             print("  %s label_%dd: BUY=%.1f%% NO_TRADE=%.1f%% AVOID=%.1f%% [%s]" % (
                 market, fd, dist["buy"]*100, dist["notrade"]*100, dist["avoid"]*100, status))
+        lc_sn = "label_sn_%dd" % fd
+        if lc_sn in fp.columns:
+            ok_sn, dist_sn = check_class_balance(fp[lc_sn].dropna().values)
+            status_sn = "OK" if ok_sn else "WARN"
+            print("  %s label_sn_%dd: BUY=%.1f%% NO_TRADE=%.1f%% AVOID=%.1f%% [%s]" % (
+                market, fd, dist_sn["buy"]*100, dist_sn["notrade"]*100, dist_sn["avoid"]*100, status_sn))
     gc.collect()
 
 for m, fp in feature_panels.items():
@@ -1205,6 +1519,128 @@ if len(all_candidates) > 0:
     print(all_candidates.groupby(["market","horizon","type"]).size().to_string())'''))
 
 # ============================================================
+# CELL — Sector Rotation Model
+# ============================================================
+C.append(md('''\
+## 5b. Sector Rotation Model
+
+Train `GradientBoostingClassifier` per market to predict P(sector outperforms market).
+Input: 5 macro features. Output: sector alpha scores for meta-model and portfolio gating.'''))
+
+C.append(code('''\
+sector_alpha_scores = {}  # {market: {sector: float}}
+strategy_primary_sector = {}  # {strategy_id: sector}
+
+STEP = "sector_rotation"
+if tracker.is_completed(STEP):
+    sr_path = os.path.join(CFG.global_eval_dir, "sector_rotation.json")
+    if os.path.exists(sr_path):
+        with open(sr_path) as f: sector_alpha_scores = json.load(f)
+    logger.info("[SKIP] %s" % STEP)
+elif not CFG.enable_sector_rotation or len(macro_data) == 0:
+    logger.info("[SKIP] sector rotation (disabled or no macro)")
+    tracker.mark_completed(STEP, {"skipped": True})
+else:
+    logger.info("[RUN] %s" % STEP)
+    from sklearn.ensemble import GradientBoostingClassifier as _GBC
+
+    for market in CFG.markets:
+        if market not in ohlcv_data:
+            continue
+        smr = sector_mean_returns.get(market, {})
+        if not isinstance(smr, dict) or "ts" not in smr:
+            continue
+        ts_median = smr["ts"]
+        ticker_sectors = smr.get("ticker_sectors", {})
+        sectors = list(ts_median.columns)
+        if len(sectors) < 2:
+            continue
+
+        # Build training data: (date, sector) -> label: sector outperforms market
+        mkt_idx = market_indices.get(market, pd.DataFrame())
+        if "close" not in mkt_idx.columns or mkt_idx.empty:
+            continue
+        mkt_ret_20d = mkt_idx["close"].pct_change(20)
+
+        # Align macro features with dates
+        macro_aligned = macro_data.reindex(ts_median.index, method="ffill")
+        macro_feats = ["yield_curve_slope", "vix_regime", "dxy_mom_60d", "gold_mom_60d", "oil_mom_60d"]
+        missing_feats = [f for f in macro_feats if f not in macro_aligned.columns]
+        for mf in missing_feats:
+            macro_aligned[mf] = 0.0
+
+        train_X, train_y = [], []
+        valid_dates = ts_median.dropna(how="all").index
+        mkt_ret_aligned = mkt_ret_20d.reindex(valid_dates, method="ffill")
+
+        for dt in valid_dates:
+            if dt not in macro_aligned.index:
+                continue
+            mrow = macro_aligned.loc[dt, macro_feats]
+            if mrow.isna().all():
+                continue
+            mkt_r = mkt_ret_aligned.get(dt, 0)
+            if np.isnan(mkt_r):
+                continue
+            for sec in sectors:
+                sec_r = ts_median.loc[dt, sec]
+                if np.isnan(sec_r):
+                    continue
+                feat_vec = list(mrow.fillna(0).values)
+                train_X.append(feat_vec)
+                train_y.append(1 if sec_r > mkt_r else 0)
+
+        if len(train_X) < 50:
+            sector_alpha_scores[market] = {s: 0.5 for s in sectors}
+            continue
+
+        MX = np.array(train_X, dtype=np.float32)
+        MY = np.array(train_y)
+        np.nan_to_num(MX, copy=False)
+
+        split = int(len(MX) * 0.7)
+        gb = _GBC(n_estimators=30, max_depth=2, random_state=CFG.seed)
+        gb.fit(MX[:split], MY[:split])
+        test_acc = float((gb.predict(MX[split:]) == MY[split:]).mean())
+        logger.info("Sector rotation %s: test acc=%.2f (%d samples)" % (market, test_acc, len(MX)))
+
+        # Score each sector using latest macro state
+        latest_macro = macro_aligned.iloc[-1][macro_feats].fillna(0).values.reshape(1, -1).astype(np.float32)
+        np.nan_to_num(latest_macro, copy=False)
+        scores = {}
+        for sec in sectors:
+            proba = gb.predict_proba(latest_macro)
+            scores[sec] = float(proba[0][1]) if proba.shape[1] > 1 else 0.5
+        sector_alpha_scores[market] = scores
+
+    # Save
+    sr_path = os.path.join(CFG.global_eval_dir, "sector_rotation.json")
+    os.makedirs(os.path.dirname(sr_path), exist_ok=True)
+    with open(sr_path, "w") as f:
+        json.dump(sector_alpha_scores, f, indent=2)
+    tracker.mark_completed(STEP, {"n_markets": len(sector_alpha_scores)})
+
+# Determine primary sector for each candidate
+if len(all_candidates) > 0 and sector_mean_returns:
+    for _, cand in all_candidates.iterrows():
+        sid = cand["strategy_id"]
+        mkt = cand.get("market", "")
+        smr = sector_mean_returns.get(mkt, {})
+        if isinstance(smr, dict) and "ticker_sectors" in smr:
+            tk_secs = smr["ticker_sectors"]
+            # Heuristic: assign based on most common sector in the market
+            # For tree/logistic, use the majority sector of selected tickers
+            if tk_secs:
+                from collections import Counter
+                sec_counts = Counter(tk_secs.values())
+                strategy_primary_sector[sid] = sec_counts.most_common(1)[0][0]
+
+print("Sector alpha scores:", {m: len(v) for m, v in sector_alpha_scores.items()})
+print("Gated sectors (alpha < %.2f):" % CFG.sector_alpha_threshold,
+      {m: [s for s, v in secs.items() if v < CFG.sector_alpha_threshold]
+       for m, secs in sector_alpha_scores.items()})'''))
+
+# ============================================================
 # CELL 22-24 — Conditional Edge Evaluation (v3)
 # ============================================================
 C.append(md('''\
@@ -1325,7 +1761,7 @@ for market in CFG.markets:
                 mask = build_mask(valid, stype, row, sid, market, ht, feat_cols)
                 rets = valid.loc[mask, fwd_col].values
                 labs = valid.loc[mask, label_col].values if label_col in valid.columns else None
-                _hd = int(ht.replace("d",""))
+                import re as _re; _hd = int(_re.search(r'(\\d+)', ht).group(1))
                 edge = evaluate_strategy_edge_v3(rets, labs, horizon_days=_hd)
                 if edge is None: continue
 
@@ -1419,7 +1855,7 @@ for market in CFG.markets:
                     tr = test_data.loc[tm, fwd_col].values
                     tl = test_data.loc[tm, label_col].values if label_col in test_data.columns else None
                     if len(tr)<20: continue
-                    _hd2 = int(ht.replace("d",""))
+                    import re as _re; _hd2 = int(_re.search(r'(\\d+)', ht).group(1))
                     edge = evaluate_strategy_edge_v3(tr, tl, horizon_days=_hd2)
                     if edge is None: continue
 
@@ -1854,15 +2290,23 @@ else:
         from sklearn.ensemble import GradientBoostingClassifier
 
         def _build_meta_features(ts_date):
-            """Build 12-dim meta-feature vector at a given timestamp.
+            """Build 20-dim meta-feature vector at a given timestamp.
 
-            [0-3] market: 20d mom, 60d mom, 20d vol, 60d vol
-            [4-8] macro: yield_curve_slope, vix_regime, dxy_mom_60d, gold_mom_60d, oil_mom_60d
-            [9]   sentiment: vix_term_structure
-            [10-11] reserved padding (zeros)
+            [0-3]   Market: 20d mom, 60d mom, 20d vol, 60d vol
+            [4-8]   Macro: yield_curve_slope, vix_regime, dxy/gold/oil momentum
+            [9]     Sentiment: vix_term_structure
+            [10]    Sector alpha: median sector rotation score
+            [11]    Theme crash: max ThemeCrashScore
+            [12]    Absolute alpha strength: mean fold Sharpe abs
+            [13]    SN alpha strength: mean fold Sharpe sn
+            [14]    Regime alignment: regime_ratio
+            [15]    Cross-market contagion flag
+            [16]    Rolling Sharpe (mortality signal)
+            [17]    Trade abstention EV score
+            [18-19] Reserved padding (zeros)
             """
-            mf = [0.0] * 12
-            # Market features (original 4)
+            mf = [0.0] * 20
+            # [0-3] Market features
             for _mkt_name in CFG.markets:
                 _mi = market_indices.get(_mkt_name, pd.DataFrame())
                 if "close" not in _mi.columns or _mi.empty:
@@ -1877,7 +2321,7 @@ else:
                 mf[3] = float(_pre.pct_change().rolling(60).std().iloc[-1]) if len(_pre) > 60 else 0
                 break  # use first available market
 
-            # Macro features (5 new)
+            # [4-8] Macro features
             if len(macro_data) > 0:
                 _md = macro_data.loc[:ts_date]
                 if len(_md) > 0:
@@ -1888,13 +2332,59 @@ else:
                     mf[7] = float(last.get("gold_mom_60d", 0)) if not np.isnan(last.get("gold_mom_60d", 0)) else 0
                     mf[8] = float(last.get("oil_mom_60d", 0)) if not np.isnan(last.get("oil_mom_60d", 0)) else 0
 
-            # Sentiment feature (1 new)
+            # [9] Sentiment feature
             if len(sentiment_data) > 0:
                 _sd = sentiment_data.loc[:ts_date]
                 if len(_sd) > 0:
                     mf[9] = float(_sd["vix_term_structure"].iloc[-1]) if not np.isnan(_sd["vix_term_structure"].iloc[-1]) else 0
 
-            # [10-11] reserved padding = 0
+            # [10] Sector alpha: median sector rotation score
+            if sector_alpha_scores:
+                all_scores = []
+                for _mkt, _secs in sector_alpha_scores.items():
+                    if isinstance(_secs, dict):
+                        all_scores.extend(_secs.values())
+                mf[10] = float(np.median(all_scores)) if all_scores else 0.5
+
+            # [11] Theme crash: max score across all sectors
+            if theme_crash_scores:
+                max_tc = 0.0
+                for _mkt, _secs in theme_crash_scores.items():
+                    if isinstance(_secs, dict):
+                        for _s, _v in _secs.items():
+                            max_tc = max(max_tc, _v)
+                mf[11] = max_tc
+
+            # [12] Absolute alpha strength: mean fold Sharpe (abs horizons)
+            if len(wf_results) > 0:
+                abs_wf = wf_results[~wf_results["horizon"].str.startswith("sn_")]
+                if len(abs_wf) > 0:
+                    mf[12] = float(abs_wf["sharpe"].mean())
+
+            # [13] SN alpha strength: mean fold Sharpe (sn horizons)
+            if len(wf_results) > 0:
+                sn_wf = wf_results[wf_results["horizon"].str.startswith("sn_")]
+                if len(sn_wf) > 0:
+                    mf[13] = float(sn_wf["sharpe"].mean())
+
+            # [14] Regime alignment: median regime_ratio from filtered
+            if len(turnover_ok) > 0 and "regime_ratio" in turnover_ok.columns:
+                mf[14] = float(turnover_ok["regime_ratio"].median())
+
+            # [15] Cross-market contagion flag
+            if cross_market_flags:
+                any_contagion = any(v.get("contagion", False) for v in cross_market_flags.values())
+                mf[15] = 1.0 if any_contagion else 0.0
+
+            # [16] Rolling Sharpe (mortality signal) - avg recent fold Sharpe
+            if len(wf_results) > 0:
+                recent_folds = wf_results.sort_values("fold_idx").groupby("strategy_id").tail(CFG.mortality_rolling_sharpe_window)
+                mf[16] = float(recent_folds["sharpe"].mean())
+
+            # [17] Trade abstention EV score - proportion surviving
+            mf[17] = float(len(meta_scored)) / max(1, float(len(turnover_ok))) if len(turnover_ok) > 0 else 1.0
+
+            # [18-19] reserved padding = 0
             return np.nan_to_num(mf).tolist()
 
         # Build training data: per-fold meta-features → success label
@@ -1927,7 +2417,7 @@ else:
             gb = GradientBoostingClassifier(n_estimators=50, max_depth=2, random_state=CFG.seed)
             gb.fit(MX[:split], MY[:split])
             test_acc = float((gb.predict(MX[split:])==MY[split:]).mean())
-            logger.info("Meta-model test accuracy: %.2f (12-dim features)" % test_acc)
+            logger.info("Meta-model test accuracy: %.2f (20-dim features)" % test_acc)
 
             # Score each surviving strategy's average meta-score
             strat_meta = {}
@@ -1967,6 +2457,267 @@ else:
         tracker.mark_completed(STEP, {"n":len(meta_scored)})
 
 print("Meta-scored: %d" % len(meta_scored))'''))
+
+# ============================================================
+# CELL — Theme Crash Scoring + Hard Veto (Step 9)
+# ============================================================
+C.append(md('''\
+## 15b. Theme Crash Scoring + Hard Veto
+
+Per market × sector: compute theme crash score. If score > threshold → hard veto,
+removing all strategies with matching primary sector from meta_scored.'''))
+
+C.append(code('''\
+theme_crash_scores = {}  # {market: {sector: float}}
+theme_vetoed_strategies = []
+
+STEP = "theme_crash_scoring"
+if tracker.is_completed(STEP):
+    tc_path = os.path.join(CFG.global_eval_dir, "theme_crash.json")
+    if os.path.exists(tc_path):
+        with open(tc_path) as f: theme_crash_scores = json.load(f)
+    logger.info("[SKIP] %s" % STEP)
+elif not CFG.enable_theme_crash or len(meta_scored) == 0:
+    logger.info("[SKIP] theme crash (disabled or no strategies)")
+    tracker.mark_completed(STEP, {"skipped": True})
+else:
+    logger.info("[RUN] %s" % STEP)
+    for market in CFG.markets:
+        if market not in ohlcv_data:
+            continue
+        smr = sector_mean_returns.get(market, {})
+        if not isinstance(smr, dict) or "ticker_sectors" not in smr:
+            continue
+        ticker_sectors = smr["ticker_sectors"]
+        sectors = list(set(ticker_sectors.values()))
+        panel = ohlcv_data[market]
+        scores = {}
+        for sector in sectors:
+            score = compute_theme_crash_score(panel, ticker_sectors, sector, CFG)
+            scores[sector] = round(score, 4)
+            if score > CFG.theme_crash_veto_threshold:
+                logger.warning("THEME CRASH VETO: %s/%s score=%.3f > %.2f" % (
+                    market, sector, score, CFG.theme_crash_veto_threshold))
+        theme_crash_scores[market] = scores
+
+    # Hard veto: remove strategies whose primary sector is vetoed
+    vetoed_sectors = {}
+    for mkt, scores in theme_crash_scores.items():
+        for sec, score in scores.items():
+            if score > CFG.theme_crash_veto_threshold:
+                vetoed_sectors.setdefault(mkt, []).append(sec)
+
+    before = len(meta_scored)
+    if vetoed_sectors:
+        def _is_vetoed(row):
+            mkt = row.get("market", "")
+            sid = row.get("strategy_id", "")
+            sec = strategy_primary_sector.get(sid, "")
+            return sec in vetoed_sectors.get(mkt, [])
+        veto_mask = meta_scored.apply(_is_vetoed, axis=1)
+        theme_vetoed_strategies = meta_scored[veto_mask]["strategy_id"].tolist()
+        meta_scored = meta_scored[~veto_mask].copy()
+        print("Theme crash hard veto: %d -> %d (vetoed %d strategies)" % (
+            before, len(meta_scored), len(theme_vetoed_strategies)))
+    else:
+        print("Theme crash: no sectors vetoed")
+
+    tc_path = os.path.join(CFG.global_eval_dir, "theme_crash.json")
+    with open(tc_path, "w") as f:
+        json.dump(theme_crash_scores, f, indent=2)
+    tracker.mark_completed(STEP, {
+        "scores": theme_crash_scores,
+        "vetoed": theme_vetoed_strategies[:10],
+        "n_vetoed": len(theme_vetoed_strategies),
+    })
+
+print("Theme crash scores:", {m: len(v) for m, v in theme_crash_scores.items()})
+print("Theme-vetoed strategies: %d" % len(theme_vetoed_strategies))'''))
+
+# ============================================================
+# CELL — Trade Abstention (Step 10)
+# ============================================================
+C.append(md('''\
+## 15c. Trade Abstention
+
+Remove strategies with insufficient expected value after adjusting for
+theme risk and regime conditions. Maximizes EV, not win-rate.'''))
+
+C.append(code('''\
+abstention_count = 0
+STEP = "trade_abstention"
+
+if tracker.is_completed(STEP):
+    logger.info("[SKIP] %s" % STEP)
+elif not CFG.enable_trade_abstention or len(meta_scored) == 0:
+    logger.info("[SKIP] trade abstention (disabled or no strategies)")
+    tracker.mark_completed(STEP, {"skipped": True})
+else:
+    logger.info("[RUN] %s" % STEP)
+    before = len(meta_scored)
+    keep_mask = []
+    for _, row in meta_scored.iterrows():
+        sid = row["strategy_id"]
+        mkt = row.get("market", "")
+        mean_ret = row.get("mean_return", 0)
+
+        # Theme risk from crash scores
+        sec = strategy_primary_sector.get(sid, "")
+        theme_risk = theme_crash_scores.get(mkt, {}).get(sec, 0)
+
+        # Regime ratio
+        regime_ratio = row.get("regime_ratio", 1.0) if "regime_ratio" in row.index else 1.0
+
+        # Adjusted EV
+        adjusted_ev = mean_ret * (1 - theme_risk * 0.5) * max(0.5, regime_ratio)
+
+        if adjusted_ev >= CFG.trade_abstention_min_ev:
+            keep_mask.append(True)
+        else:
+            keep_mask.append(False)
+
+    meta_scored = meta_scored[keep_mask].copy()
+    abstention_count = before - len(meta_scored)
+    print("Trade abstention: %d -> %d (abstained %d)" % (before, len(meta_scored), abstention_count))
+    tracker.mark_completed(STEP, {"abstained": abstention_count})
+
+print("After abstention: %d strategies" % len(meta_scored))'''))
+
+# ============================================================
+# CELL — Cross-Market Consistency Check (Step 11)
+# ============================================================
+C.append(md('''\
+## 15d. Cross-Market Consistency
+
+Compare US vs KR markets for contagion signals. If US dropped >3%
+in past N days while KR is flat → contagion flag. Feeds meta-model.'''))
+
+C.append(code('''\
+cross_market_flags = {}
+STEP = "cross_market"
+
+if tracker.is_completed(STEP):
+    cm_path = os.path.join(CFG.global_eval_dir, "cross_market.json")
+    if os.path.exists(cm_path):
+        with open(cm_path) as f: cross_market_flags = json.load(f)
+    logger.info("[SKIP] %s" % STEP)
+elif not CFG.enable_cross_market_consistency or len(market_indices) < 2:
+    logger.info("[SKIP] cross-market (disabled or single market)")
+    tracker.mark_completed(STEP, {"skipped": True})
+else:
+    logger.info("[RUN] %s" % STEP)
+    lag = CFG.cross_market_contagion_lag_days
+
+    for mkt_a in CFG.markets:
+        for mkt_b in CFG.markets:
+            if mkt_a >= mkt_b:
+                continue
+            mi_a = market_indices.get(mkt_a, pd.DataFrame())
+            mi_b = market_indices.get(mkt_b, pd.DataFrame())
+            if "close" not in mi_a.columns or "close" not in mi_b.columns:
+                continue
+            if mi_a.empty or mi_b.empty:
+                continue
+
+            # Check if mkt_a dropped >3% in past N days
+            ret_a = mi_a["close"].pct_change(lag)
+            ret_b = mi_b["close"].pct_change(lag)
+            if len(ret_a) < lag or len(ret_b) < lag:
+                continue
+
+            latest_a = float(ret_a.iloc[-1]) if not np.isnan(ret_a.iloc[-1]) else 0
+            latest_b = float(ret_b.iloc[-1]) if not np.isnan(ret_b.iloc[-1]) else 0
+
+            flag_key = "%s_to_%s" % (mkt_a, mkt_b)
+            contagion = False
+            if latest_a < -0.03 and latest_b > -0.01:
+                contagion = True
+                print("CONTAGION WARNING: %s dropped %.1f%% but %s only %.1f%% (lag=%dd)" % (
+                    mkt_a, latest_a * 100, mkt_b, latest_b * 100, lag))
+            elif latest_b < -0.03 and latest_a > -0.01:
+                contagion = True
+                flag_key = "%s_to_%s" % (mkt_b, mkt_a)
+                print("CONTAGION WARNING: %s dropped %.1f%% but %s only %.1f%% (lag=%dd)" % (
+                    mkt_b, latest_b * 100, mkt_a, latest_a * 100, lag))
+
+            cross_market_flags[flag_key] = {
+                "contagion": contagion,
+                "ret_%s" % mkt_a: round(latest_a, 4),
+                "ret_%s" % mkt_b: round(latest_b, 4),
+            }
+
+    cm_path = os.path.join(CFG.global_eval_dir, "cross_market.json")
+    with open(cm_path, "w") as f:
+        json.dump(cross_market_flags, f, indent=2)
+    tracker.mark_completed(STEP, cross_market_flags)
+
+print("Cross-market flags:", cross_market_flags)'''))
+
+# ============================================================
+# CELL — Regime-Conditional Threshold Adaptation (Step 12)
+# ============================================================
+C.append(md('''\
+## 15e. Regime-Conditional Thresholds
+
+Adapt thresholds based on current VIX regime:
+- High vol (>1.5): widen tri-state thresholds, raise meta-model threshold
+- Low vol (<0.7): narrow thresholds, lower meta-model threshold
+These inform meta-model and report; labeling uses adapted thresholds in next run.'''))
+
+C.append(code('''\
+adapted_thresholds = {}
+STEP = "regime_thresholds"
+
+if tracker.is_completed(STEP):
+    at_path = os.path.join(CFG.global_eval_dir, "adapted_thresholds.json")
+    if os.path.exists(at_path):
+        with open(at_path) as f: adapted_thresholds = json.load(f)
+    logger.info("[SKIP] %s" % STEP)
+elif not CFG.enable_regime_adaptive_thresholds:
+    logger.info("[SKIP] regime thresholds (disabled)")
+    tracker.mark_completed(STEP, {"skipped": True})
+else:
+    logger.info("[RUN] %s" % STEP)
+    current_vix_regime = 1.0
+    if len(macro_data) > 0 and "vix_regime" in macro_data.columns:
+        vr = macro_data["vix_regime"].iloc[-1]
+        if not np.isnan(vr):
+            current_vix_regime = float(vr)
+
+    # Adapt tristate thresholds
+    adapted_tristate = {}
+    for fd, th in CFG.tristate_thresholds_pct.items():
+        if current_vix_regime > 1.5:
+            # High vol: widen thresholds
+            adapted_tristate[str(fd)] = round(th * current_vix_regime, 2)
+        elif current_vix_regime < 0.7:
+            # Low vol: narrow thresholds
+            adapted_tristate[str(fd)] = round(th * current_vix_regime, 2)
+        else:
+            adapted_tristate[str(fd)] = th
+
+    # Adapt meta-model threshold
+    if current_vix_regime > 1.5:
+        adapted_meta_th = round(CFG.meta_model_threshold * 1.2, 3)
+    elif current_vix_regime < 0.7:
+        adapted_meta_th = round(CFG.meta_model_threshold * 0.8, 3)
+    else:
+        adapted_meta_th = CFG.meta_model_threshold
+
+    adapted_thresholds = {
+        "current_vix_regime": round(current_vix_regime, 3),
+        "adapted_tristate_pct": adapted_tristate,
+        "adapted_meta_threshold": adapted_meta_th,
+        "original_meta_threshold": CFG.meta_model_threshold,
+        "note": "Adapted thresholds apply to next run labeling; current run uses original",
+    }
+
+    at_path = os.path.join(CFG.global_eval_dir, "adapted_thresholds.json")
+    with open(at_path, "w") as f:
+        json.dump(adapted_thresholds, f, indent=2)
+    tracker.mark_completed(STEP, adapted_thresholds)
+
+print("Adapted thresholds:", json.dumps(adapted_thresholds, indent=2))'''))
 
 # ============================================================
 # CELL 43-44 — Bayesian Auto Rule Tuning (Part 10)
@@ -2055,6 +2806,39 @@ else:
         mask = (df["mean_precision_buy"]>=prec_th) & (df["mean_turnover"]<=turn_th)
         df = df[mask].copy()
 
+        # --- Strategy Mortality: kill degraded strategies ---
+        mortality_killed = []
+        if CFG.enable_strategy_mortality and len(df) > 0 and len(wf_results) > 0:
+            kill_ids = set()
+            for sid in df["strategy_id"]:
+                sg = wf_results[wf_results["strategy_id"] == sid].sort_values("fold_idx")
+                if len(sg) < 2:
+                    continue
+                # Rolling Sharpe over last N folds
+                n_window = min(CFG.mortality_rolling_sharpe_window, len(sg))
+                recent = sg.tail(n_window)
+                rolling_sharpe = float(recent["sharpe"].mean())
+                # Consecutive negative folds
+                rets = sg["mean_return"].values
+                consec_neg = 0
+                max_consec_neg = 0
+                for r in reversed(rets):
+                    if r < 0:
+                        consec_neg += 1
+                        max_consec_neg = max(max_consec_neg, consec_neg)
+                    else:
+                        break
+                if rolling_sharpe < CFG.mortality_sharpe_kill_threshold:
+                    kill_ids.add(sid)
+                    mortality_killed.append(sid)
+                elif max_consec_neg >= CFG.mortality_consecutive_negative_folds:
+                    kill_ids.add(sid)
+                    mortality_killed.append(sid)
+            if kill_ids:
+                before_mort = len(df)
+                df = df[~df["strategy_id"].isin(kill_ids)].copy()
+                print("Strategy mortality: %d -> %d (killed %d)" % (before_mort, len(df), len(kill_ids)))
+
         if len(df)==0:
             scored = pd.DataFrame(); tracker.mark_completed(STEP,{"n":0})
         else:
@@ -2094,6 +2878,17 @@ else:
                 except Exception as _e:
                     logger.debug("Macro veto check error: %s" % str(_e)[:60])
 
+            # --- Sector Alpha Gate: penalize low-alpha sectors ---
+            if CFG.enable_sector_rotation and sector_alpha_scores:
+                for idx, row in df.iterrows():
+                    sid = row["strategy_id"]
+                    mkt = row.get("market", "")
+                    sec = strategy_primary_sector.get(sid, "")
+                    sas = sector_alpha_scores.get(mkt, {})
+                    if isinstance(sas, dict) and sec in sas:
+                        if sas[sec] < CFG.sector_alpha_threshold:
+                            df.at[idx, "composite"] = df.at[idx, "composite"] * 0.7
+
             # Keep top N per market
             parts = []
             for (m,h), g in df.groupby(["market","horizon"]):
@@ -2102,7 +2897,7 @@ else:
             scored = scored.sort_values("composite", ascending=False).reset_index(drop=True)
             scored["rank"] = range(1, len(scored)+1)
             scored.to_parquet(sc_path)
-            tracker.mark_completed(STEP, {"n":len(scored)})
+            tracker.mark_completed(STEP, {"n":len(scored), "mortality_killed": mortality_killed[:10]})
 
 print("Scored: %d" % len(scored))
 if len(scored)>0:
@@ -2202,9 +2997,20 @@ print(json.dumps(portfolio_results, indent=2))'''))
 C.append(md('''\
 ## 19. Signal → Rule → Portfolio Architecture (Part 11)
 
+**Veto Priority Hierarchy:**
+```
+1. THEME CRASH HARD VETO (score > 0.7)     → removes strategies entirely
+2. MACRO VETO (VIX>2x + yield inverted)    → halves composite scores
+3. TRADE ABSTENTION (adjusted_ev < min)     → removes low-EV strategies
+4. META-MODEL GATE (20-dim, P(success))     → removes low meta-score
+5. SECTOR ALPHA GATE (rotation model)       → penalizes composite (×0.7)
+6. STRATEGY MORTALITY (rolling Sharpe < 0)  → kills degraded strategies
+```
+
 ```
 ┌─────────────────────────────────────────────┐
 │  Model Output (decile/tree/logistic probs)  │
+│  Dual labels: absolute + sector-neutral     │
 └─────────────────┬───────────────────────────┘
                   ▼
 ┌─────────────────────────────────────────────┐
@@ -2214,7 +3020,12 @@ C.append(md('''\
                   ▼
 ┌─────────────────────────────────────────────┐
 │  Meta-Model Gate: P(success | market state) │
-│  If meta-score < threshold → NO TRADE       │
+│  20-dim features, if meta < th → NO TRADE   │
+└─────────────────┬───────────────────────────┘
+                  ▼
+┌─────────────────────────────────────────────┐
+│  Theme Crash + Trade Abstention             │
+│  Hard veto sectors, remove low-EV strategies│
 └─────────────────┬───────────────────────────┘
                   ▼
 ┌─────────────────────────────────────────────┐
@@ -2225,11 +3036,7 @@ C.append(md('''\
 │  • Cost survival ≥ 2 scenarios              │
 │  • Regime ratio ≥ 70%                        │
 │  • Turnover ≤ max                            │
-└─────────────────┬───────────────────────────┘
-                  ▼
-┌─────────────────────────────────────────────┐
-│  Trade Signal: BUY / NO TRADE               │
-│  (AVOID signals → skip entirely)            │
+│  • Sector alpha gate + Strategy mortality   │
 └─────────────────┬───────────────────────────┘
                   ▼
 ┌─────────────────────────────────────────────┐
@@ -2261,6 +3068,13 @@ active_modules = {
     "axis_c_macro": CFG.enable_macro_features,
     "axis_d_sectors": CFG.enable_sector_features,
     "axis_e_sentiment": CFG.enable_sentiment_proxy,
+    "sector_neutral_labels": CFG.enable_sector_neutral_labels,
+    "sector_rotation": CFG.enable_sector_rotation,
+    "theme_crash": CFG.enable_theme_crash,
+    "trade_abstention": CFG.enable_trade_abstention,
+    "cross_market_consistency": CFG.enable_cross_market_consistency,
+    "regime_adaptive_thresholds": CFG.enable_regime_adaptive_thresholds,
+    "strategy_mortality": CFG.enable_strategy_mortality,
 }
 print("\\nActive modules:")
 for mod, on in active_modules.items():
@@ -2290,11 +3104,19 @@ if sample_market:
     print("  %-20s: %d" % ("+ decile versions", len([c for c in fp.columns if c.endswith("_decile")])))
 
 # Meta-model dimension check
-print("\\nMeta-model feature vector: 12 dimensions")
-print("  [0-3]  Market: 20d mom, 60d mom, 20d vol, 60d vol")
-print("  [4-8]  Macro: yield_curve_slope, vix_regime, dxy/gold/oil momentum")
-print("  [9]    Sentiment: vix_term_structure")
-print("  [10-11] Reserved padding")
+print("\\nMeta-model feature vector: 20 dimensions")
+print("  [0-3]   Market: 20d mom, 60d mom, 20d vol, 60d vol")
+print("  [4-8]   Macro: yield_curve_slope, vix_regime, dxy/gold/oil momentum")
+print("  [9]     Sentiment: vix_term_structure")
+print("  [10]    Sector alpha: median sector rotation score")
+print("  [11]    Theme crash: max ThemeCrashScore")
+print("  [12]    Absolute alpha strength")
+print("  [13]    SN alpha strength")
+print("  [14]    Regime alignment")
+print("  [15]    Cross-market contagion flag")
+print("  [16]    Rolling Sharpe (mortality)")
+print("  [17]    Trade abstention EV")
+print("  [18-19] Reserved padding")
 
 # Macro veto status
 if CFG.enable_macro_features and len(macro_data) > 0:
@@ -2398,13 +3220,19 @@ else:
     # P5: Funnel chart (strategy count at each filter stage)
     ax5 = fig.add_subplot(gs[2,0])
     stages = ["Candidates","Edge","WF Top","Overfitting","Beta-neutral",
-              "Dist-safe","Cost-stress","Deduped","Regime","Turnover","Meta-gate","Scored"]
+              "Dist-safe","Cost-stress","Deduped","Regime","Turnover","Meta-gate",
+              "Theme veto","Abstention","Scored"]
+    _post_meta = len(meta_scored) + len(theme_vetoed_strategies) + abstention_count
+    _post_veto = _post_meta - len(theme_vetoed_strategies)
+    _post_abstain = _post_veto - abstention_count
     counts = [
         len(all_candidates), len(edge_results),
         wf_results["strategy_id"].nunique() if len(wf_results)>0 else 0,
         len(filtered), len(beta_filtered), len(dist_safe),
         len(cost_survived), len(deduped), len(regime_ok),
-        len(turnover_ok), len(meta_scored), len(scored),
+        len(turnover_ok), _post_meta,
+        _post_veto, _post_abstain,
+        len(scored),
     ]
     ax5.barh(range(len(stages)), counts, color='steelblue', edgecolor='white')
     ax5.set_yticks(range(len(stages))); ax5.set_yticklabels(stages, fontsize=8)
@@ -2468,8 +3296,11 @@ if len(scored)>0:
     print("\\n=== Tuned Rules ===")
     print(json.dumps(tuned_rules, indent=2))
 
+    # Count SN strategies
+    _sn_strats = [s for s in scored["strategy_id"] if "_sn_" in s] if len(scored) > 0 else []
+
     report = {
-        "version":"v3", "markets":CFG.markets, "horizons":CFG.forward_days_list,
+        "version":"v3.1", "markets":CFG.markets, "horizons":CFG.forward_days_list,
         "tri_state_thresholds":CFG.tristate_thresholds_pct,
         "cost_stress_scenarios":[list(s) for s in CFG.cost_stress_scenarios],
         "funnel":{"candidates":len(all_candidates),"edge":len(edge_results),
@@ -2478,15 +3309,41 @@ if len(scored)>0:
                   "dist_safe":len(dist_safe),"cost_survived":len(cost_survived),
                   "deduped":len(deduped),"regime":len(regime_ok),
                   "turnover":len(turnover_ok),"meta_gated":len(meta_scored),
+                  "theme_vetoed":len(theme_vetoed_strategies),
+                  "abstained":abstention_count,
                   "scored":len(scored)},
         "tuned_rules":tuned_rules, "portfolio":portfolio_results,
         "top_strategy":b["strategy_id"],
-        "active_modules": {
-            "axis_a_liquidity": CFG.enable_liquidity_features,
-            "axis_b_fundamentals": CFG.enable_fundamental_features,
-            "axis_c_macro": CFG.enable_macro_features,
-            "axis_d_sectors": CFG.enable_sector_features,
-            "axis_e_sentiment": CFG.enable_sentiment_proxy,
+        "active_modules": active_modules,
+        "sector_neutral": {
+            "enabled": CFG.enable_sector_neutral_labels,
+            "n_sn_strategies": len(_sn_strats),
+        },
+        "sector_rotation": {
+            "enabled": CFG.enable_sector_rotation,
+            "sector_scores": sector_alpha_scores,
+            "gated_sectors": {m: [s for s, v in secs.items() if v < CFG.sector_alpha_threshold]
+                              for m, secs in sector_alpha_scores.items()} if sector_alpha_scores else {},
+        },
+        "theme_crash": {
+            "enabled": CFG.enable_theme_crash,
+            "scores": theme_crash_scores,
+            "vetoed": theme_vetoed_strategies[:20],
+        },
+        "trade_abstention": {
+            "enabled": CFG.enable_trade_abstention,
+            "abstention_count": abstention_count,
+        },
+        "cross_market": {
+            "flags": cross_market_flags,
+        },
+        "regime_adaptive": {
+            "adapted_thresholds": adapted_thresholds,
+        },
+        "strategy_mortality": {
+            "enabled": CFG.enable_strategy_mortality,
+            "killed": mortality_killed[:20] if 'mortality_killed' in dir() else [],
+            "n_killed": len(mortality_killed) if 'mortality_killed' in dir() else 0,
         },
     }
     rp = os.path.join(CFG.drive_root, 'report_v3.json')
