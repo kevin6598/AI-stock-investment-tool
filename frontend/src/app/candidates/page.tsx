@@ -4,24 +4,24 @@ import { useState, useEffect } from "react";
 import TickerSearch from "@/components/TickerSearch";
 import {
   api,
-  Top10Stock,
-  Top10Response,
+  StrategyCandidateStock,
+  StrategyCandidatesResponse,
   ExposureGuidanceResponse,
 } from "@/lib/api";
 import { formatReturn, directionColor } from "@/lib/utils";
 
 export default function CandidatesPage() {
-  const [top10Data, setTop10Data] = useState<Top10Response | null>(null);
+  const [data, setData] = useState<StrategyCandidatesResponse | null>(null);
   const [exposure, setExposure] = useState<ExposureGuidanceResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       const results = await Promise.allSettled([
-        api.getTop10("US", "3M", "risk_parity"),
+        api.getStrategyCandidates("3M"),
         api.getExposureGuidance(),
       ]);
-      if (results[0].status === "fulfilled") setTop10Data(results[0].value);
+      if (results[0].status === "fulfilled") setData(results[0].value);
       if (results[1].status === "fulfilled") setExposure(results[1].value);
       setLoading(false);
     }
@@ -41,6 +41,38 @@ export default function CandidatesPage() {
         </div>
         <TickerSearch />
       </div>
+
+      {/* Strategy header banner */}
+      {data && (
+        <div className="bg-gradient-to-r from-indigo-500/10 to-purple-500/10 rounded-xl p-4 border border-indigo-200 dark:border-indigo-800 mb-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Active Strategy</div>
+              <div className="font-mono text-sm font-bold text-indigo-600 dark:text-indigo-400">
+                {data.strategy_name}
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 font-mono">
+                {data.strategy_id}
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-gray-500">Signal Match</div>
+              <div className="font-mono text-lg font-bold">
+                {data.signal_matches}
+                <span className="text-xs text-gray-400 font-normal">
+                  /{data.universe_size}
+                </span>
+              </div>
+              <div className="text-xs text-gray-400">
+                {data.universe_size > 0
+                  ? ((data.signal_matches / data.universe_size) * 100).toFixed(1)
+                  : "0.0"}
+                % pass rate
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Exposure context */}
       {exposure && (
@@ -69,14 +101,14 @@ export default function CandidatesPage() {
             />
           ))}
         </div>
-      ) : top10Data && top10Data.stocks.length > 0 ? (
+      ) : data && data.stocks.length > 0 ? (
         <>
           <div className="text-xs text-gray-400 mb-3">
-            {top10Data.total_candidates} candidates analyzed | Pass rate:{" "}
-            {(top10Data.pass_rate * 100).toFixed(1)}% | Horizon: {top10Data.horizon}
+            {data.signal_matches} signal matches | ML pass rate:{" "}
+            {(data.pass_rate * 100).toFixed(1)}% | Horizon: {data.horizon}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {top10Data.stocks.map((stock) => (
+            {data.stocks.map((stock) => (
               <CandidateCard
                 key={stock.ticker}
                 stock={stock}
@@ -102,7 +134,7 @@ function CandidateCard({
   stock,
   exposureMult,
 }: {
-  stock: Top10Stock;
+  stock: StrategyCandidateStock;
   exposureMult: number;
 }) {
   const isUp = stock.direction === "UP";
@@ -139,6 +171,30 @@ function CandidateCard({
           </div>
         </div>
       </div>
+
+      {/* Strategy signal features */}
+      {stock.mom_60d != null && stock.high_52w_pct != null && (
+        <div className="flex gap-3 mb-2 text-xs">
+          <div className="bg-indigo-50 dark:bg-indigo-900/30 rounded px-2 py-1">
+            <span className="text-gray-500">mom_60d </span>
+            <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">
+              d{stock.mom_60d_decile}
+            </span>
+            <span className="text-gray-400 ml-1">
+              ({(stock.mom_60d * 100).toFixed(1)}%)
+            </span>
+          </div>
+          <div className="bg-purple-50 dark:bg-purple-900/30 rounded px-2 py-1">
+            <span className="text-gray-500">52w_pct </span>
+            <span className="font-mono font-bold text-purple-600 dark:text-purple-400">
+              d{stock.high_52w_pct_decile}
+            </span>
+            <span className="text-gray-400 ml-1">
+              ({(stock.high_52w_pct * 100).toFixed(1)}%)
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Metrics */}
       <div className="grid grid-cols-4 gap-2 text-xs mb-2">

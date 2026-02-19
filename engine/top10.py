@@ -32,6 +32,11 @@ class Top10Stock:
     sentiment_score: float
     allocation_weight: float
     reasons: List[str]
+    # Optional strategy signal fields (populated when strategy_filter is used)
+    strategy_mom_60d: Optional[float] = None
+    strategy_high_52w_pct: Optional[float] = None
+    strategy_mom_60d_decile: Optional[int] = None
+    strategy_high_52w_pct_decile: Optional[int] = None
 
 
 @dataclass
@@ -158,9 +163,24 @@ class Top10Engine:
                 pass
         return 0.0
 
-    def _generate_reasons(self, pred: Any, score: float) -> List[str]:
+    def _generate_reasons(
+        self, pred: Any, score: float, strategy_candidate: Any = None,
+    ) -> List[str]:
         """Generate human-readable reasons for selection."""
         reasons = []
+
+        # Strategy signal reason (first, if available)
+        if strategy_candidate is not None:
+            reasons.append(
+                "Strategy signal: mom_60d d%d (%.2f%%), high_52w_pct d%d (%.1f%%)"
+                % (
+                    strategy_candidate.mom_60d_decile,
+                    strategy_candidate.mom_60d * 100,
+                    strategy_candidate.high_52w_pct_decile,
+                    strategy_candidate.high_52w_pct * 100,
+                )
+            )
+
         p_up = _get_field(pred, "p_up", _get_field(pred, "probability_up", 0.5))
         point = _get_field(pred, "point_estimate", 0.0)
         confidence = _get_field(pred, "confidence", 0.0)
@@ -191,6 +211,7 @@ class Top10Engine:
         horizon: str = "1M",
         allocation_mode: str = "risk_parity",
         max_stocks: int = 10,
+        strategy_filter: Optional[Any] = None,
     ) -> Top10Result:
         """Run the full Top 10 selection pipeline.
 
@@ -199,18 +220,28 @@ class Top10Engine:
             horizon: Forecast horizon ("1M", "3M", "6M", "1Y").
             allocation_mode: Weight allocation strategy.
             max_stocks: Number of stocks to select (default 10).
+            strategy_filter: Optional StrategyFilterResult to restrict universe
+                to strategy-matched tickers only.
 
         Returns:
             Top10Result with ranked stock picks.
         """
         from data.universe_manager import UniverseManager
 
-        # Step 1: Get universe
-        um = UniverseManager()
-        market_upper = market.upper()
-        tickers = um.get_universe_by_market(
-            "all" if market_upper == "ALL" else market_upper,
-        )
+        # Step 1: Get universe (possibly narrowed by strategy filter)
+        if strategy_filter is not None and strategy_filter.candidates:
+            tickers = [c.ticker for c in strategy_filter.candidates]
+            logger.info(
+                "Top10: universe narrowed to %d strategy-matched tickers",
+                len(tickers),
+            )
+        else:
+            um = UniverseManager()
+            market_upper = market.upper()
+            tickers = um.get_universe_by_market(
+                "all" if market_upper == "ALL" else market_upper,
+            )
+
         total_candidates = len(tickers)
         logger.info("Top10: %d candidates for market=%s", total_candidates, market)
 
@@ -271,6 +302,12 @@ class Top10Engine:
             [pred for _, pred in top], allocation_mode,
         )
 
+        # Build strategy feature lookup
+        strategy_lookup = {}
+        if strategy_filter is not None:
+            for c in strategy_filter.candidates:
+                strategy_lookup[c.ticker] = c
+
         # Step 6: Build result
         stocks = []
         for rank_idx, (score, pred) in enumerate(top):
@@ -281,6 +318,17 @@ class Top10Engine:
             risk_score = _get_field(pred, "risk_score", 0.5)
             sentiment = self._extract_sentiment_score(pred)
             direction = _get_field(pred, "direction", "UP" if point > 0 else "DOWN")
+
+            # Strategy signal fields
+            sc = strategy_lookup.get(ticker)
+            strat_kwargs = {}
+            if sc is not None:
+                strat_kwargs = dict(
+                    strategy_mom_60d=round(sc.mom_60d, 6),
+                    strategy_high_52w_pct=round(sc.high_52w_pct, 6),
+                    strategy_mom_60d_decile=sc.mom_60d_decile,
+                    strategy_high_52w_pct_decile=sc.high_52w_pct_decile,
+                )
 
             stocks.append(Top10Stock(
                 rank=rank_idx + 1,
@@ -293,7 +341,8 @@ class Top10Engine:
                 risk_score=round(float(risk_score), 4),
                 sentiment_score=round(float(sentiment), 4),
                 allocation_weight=round(weights.get(ticker, 1.0 / max_stocks), 4),
-                reasons=self._generate_reasons(pred, score),
+                reasons=self._generate_reasons(pred, score, sc),
+                **strat_kwargs,
             ))
 
         return Top10Result(

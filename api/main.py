@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from api.model_cache import ModelCache
 from api.feature_pipeline import ServingFeaturePipeline
-from api.routes import predict, indicators, sentiment, health, diagnostics, top10, strategy
+from api.routes import predict, indicators, sentiment, health, diagnostics, top10, strategy, candidates
 from api.auth import APIKeyMiddleware, RateLimiter
 
 logging.basicConfig(
@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI):
     # Inject dependencies into route modules
     predict.set_dependencies(model_cache, feature_pipeline)
     top10.set_dependencies(model_cache, feature_pipeline)
+    candidates.set_dependencies(model_cache, feature_pipeline)
     health.set_model_cache(model_cache)
 
     yield
@@ -98,6 +99,7 @@ app.include_router(health.router)
 app.include_router(diagnostics.router)
 app.include_router(top10.router)
 app.include_router(strategy.router)
+app.include_router(candidates.router)
 
 
 @app.get("/")

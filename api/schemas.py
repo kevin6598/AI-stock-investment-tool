@@ -145,6 +145,39 @@ class Top10Response(BaseModel):
     pass_rate: float
 
 
+# --- Strategy Candidates Models ---
+
+class StrategyCandidateSchema(BaseModel):
+    rank: int
+    ticker: str
+    score: float
+    direction: str
+    p_up: float = Field(ge=0, le=1)
+    expected_return: float
+    confidence: float = Field(ge=0, le=1)
+    risk_score: float = Field(ge=0, le=1)
+    sentiment_score: float
+    allocation_weight: float = Field(ge=0, le=1)
+    reasons: List[str]
+    mom_60d: Optional[float] = None
+    high_52w_pct: Optional[float] = None
+    mom_60d_decile: Optional[int] = None
+    high_52w_pct_decile: Optional[int] = None
+
+
+class StrategyCandidatesResponse(BaseModel):
+    strategy_id: str
+    strategy_name: str
+    market: str
+    horizon: str
+    stocks: List[StrategyCandidateSchema]
+    generated_at: str
+    model_version: Optional[str] = None
+    universe_size: int
+    signal_matches: int
+    pass_rate: float
+
+
 # --- Strategy Governance Models ---
 
 class StrategySignalSchema(BaseModel):

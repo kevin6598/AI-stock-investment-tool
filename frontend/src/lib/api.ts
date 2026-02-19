@@ -105,6 +105,39 @@ export interface Top10Response {
   pass_rate: number;
 }
 
+// --- Strategy Candidates Types ---
+
+export interface StrategyCandidateStock {
+  rank: number;
+  ticker: string;
+  score: number;
+  direction: "UP" | "DOWN" | "HOLD";
+  p_up: number;
+  expected_return: number;
+  confidence: number;
+  risk_score: number;
+  sentiment_score: number;
+  allocation_weight: number;
+  reasons: string[];
+  mom_60d: number | null;
+  high_52w_pct: number | null;
+  mom_60d_decile: number | null;
+  high_52w_pct_decile: number | null;
+}
+
+export interface StrategyCandidatesResponse {
+  strategy_id: string;
+  strategy_name: string;
+  market: string;
+  horizon: string;
+  stocks: StrategyCandidateStock[];
+  generated_at: string;
+  model_version: string | null;
+  universe_size: number;
+  signal_matches: number;
+  pass_rate: number;
+}
+
 // --- Strategy Governance Types ---
 
 export interface StrategySignal {
@@ -222,6 +255,16 @@ export const api = {
   ): Promise<Top10Response> {
     const params = new URLSearchParams({ horizon, allocation });
     return fetchJSON(`/api/v1/portfolio/top10/${market}?${params}`);
+  },
+
+  // Strategy Candidates endpoint
+  getStrategyCandidates(
+    horizon: string = "3M",
+    allocation: string = "risk_parity",
+    market: string = "US"
+  ): Promise<StrategyCandidatesResponse> {
+    const params = new URLSearchParams({ horizon, allocation, market });
+    return fetchJSON(`/api/v1/strategy/candidates?${params}`);
   },
 
   // Strategy Governance endpoints
