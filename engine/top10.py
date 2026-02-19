@@ -229,7 +229,9 @@ class Top10Engine:
         from data.universe_manager import UniverseManager
 
         # Step 1: Get universe (possibly narrowed by strategy filter)
-        if strategy_filter is not None and strategy_filter.candidates:
+        if strategy_filter is not None:
+            # Strategy filter was explicitly requested — use only matched tickers.
+            # If no tickers matched, return empty (don't fall back to full universe).
             tickers = [c.ticker for c in strategy_filter.candidates]
             logger.info(
                 "Top10: universe narrowed to %d strategy-matched tickers",
